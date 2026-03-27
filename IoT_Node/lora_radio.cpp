@@ -77,14 +77,20 @@ static bool aesgcmEncrypt(
     return false;
   }
 
+  // mbedTLS doesn't like nullptr for plaintext/ciphertext even with length 0
+  // Use dummy buffer for empty payloads
+  uint8_t dummy[1] = {0};
+  const uint8_t *plainPtr = (plainLen > 0) ? plain : dummy;
+  uint8_t *cipherPtr = (plainLen > 0) ? cipher : dummy;
+
   int rc = mbedtls_gcm_crypt_and_tag(
     &gcm,
     MBEDTLS_GCM_ENCRYPT,
     plainLen,
     nonce, GCM_NONCE_LEN,
     aad, aadLen,
-    plain,
-    cipher,
+    plainPtr,
+    cipherPtr,
     GCM_TAG_LEN, tag
   );
 

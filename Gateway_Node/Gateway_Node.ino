@@ -254,14 +254,20 @@ bool buildSecureFrame(
     return false;
   }
 
+  // mbedTLS doesn't like nullptr for plaintext/ciphertext even with length 0
+  // Use dummy buffer for empty payloads (e.g., ACK frames)
+  uint8_t dummy[1] = {0};
+  const uint8_t *plainPtr = (plainLen > 0) ? plain : dummy;
+  uint8_t *cipherPtr = (plainLen > 0) ? ciphertext : dummy;
+
   int rc = mbedtls_gcm_crypt_and_tag(
     &gcm,
     MBEDTLS_GCM_ENCRYPT,
     plainLen,
     nonce, GCM_NONCE_LEN,
     outFrame, aadLen,  // AAD = full header including payload length
-    plain,
-    ciphertext,
+    plainPtr,
+    cipherPtr,
     GCM_TAG_LEN, tag
   );
 
