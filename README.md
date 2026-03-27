@@ -1,131 +1,285 @@
 # IoT Water Quality Monitoring System with LoRa
 
-Real-time water quality monitoring using FreeRTOS, ESP32, and LoRa communication with end-to-end encryption.
+Real-time water quality monitoring system using FreeRTOS, ESP32, and LoRa communication with end-to-end encryption.
 
-## About The Project
+## Overview
 
-A comprehensive IoT system that monitors water quality parameters (pH, TDS, turbidity, temperature) using distributed sensor nodes with secure LoRa communication to a central gateway. Features real-time alerts, SD card logging, and audio notifications.
+This project implements a distributed IoT water quality monitoring system with two main components:
 
-**Key Features:**
-- 🌊 Multi-parameter water quality monitoring (pH, TDS, turbidity, temperature, battery)
-- 📡 Long-range LoRa communication (up to 10+ km in optimal conditions)
-- 🔒 End-to-end encryption (AES-128 + HMAC-256)
-- 🎛️ FreeRTOS real-time task management
-- 🎵 Audio alert system on gateway
-- 💾 SD card data logging
-- 📊 Real-time OLED display on sensor node
-- 🔋 Battery monitoring and optimization
-- 🌐 Shake detection (accelerometer-based event triggering)
+- **IoT Measurement Node**: Autonomous sensor platform that reads water quality parameters and transmits encrypted data via LoRa
+- **Gateway Node**: Central receiver that decrypts messages, validates authenticity, logs data, and triggers alerts
 
-### Built With
+The system demonstrates real-time embedded systems design, cryptographic protocols, wireless communication, and FreeRTOS task management on resource-constrained devices.
 
-* [![Arduino][Arduino.cc]][Arduino-url]
-* [![ESP32][ESP32]][ESP32-url]
-* [![FreeRTOS][FreeRTOS]][FreeRTOS-url]
-* [![LoRa][LoRa]][LoRa-url]
-* [![ArduinoJson][ArduinoJson]][ArduinoJson-url]
+### Key Features
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+- 🌊 **Multi-parameter monitoring**: pH, Total Dissolved Solids (TDS), turbidity, water temperature
+- 📡 **Long-range LoRa communication**: 433 MHz ISM band, up to 10+ km line-of-sight
+- 🔒 **End-to-end encryption**: AES-128 in ECB mode with HMAC-256 authentication
+- 🎛️ **Real-time OS**: FreeRTOS task scheduling on ESP32/ESP32-S3
+- 🎵 **Alert system**: Audio notifications on gateway for threshold violations
+- 💾 **Data logging**: SD card storage with timestamp indexing
+- 📊 **Live display**: OLED screen on sensor node
+- 🔋 **Power monitoring**: Battery voltage, current (mA), and percentage tracking
+- 🌐 **Event detection**: Accelerometer-based shake/motion detection
 
-## Getting Started
+### Technical Stack
 
-### Prerequisites
+- **Hardware**: ESP32-S3 (sensor node), ESP32 DevKit (gateway), SX1276 LoRa module
+- **OS**: FreeRTOS with dual-core support
+- **Communication**: LoRa (Arduino library v0.8.0)
+- **Serialization**: ArduinoJson (v7.4.3+)
+- **Build System**: Arduino IDE 2.0+
 
-- Arduino IDE 2.0 or later
-- ESP32 Dev Kit or ESP32-S3 board
-- LoRa module (SX1276 or similar)
-- Water quality sensors (pH, TDS, Turbidity)
-- DS18B20 temperature sensor
-- MPU6050 accelerometer
-- INA219 current monitor
-- OLED display (SSD1306)
-- NeoPixel RGB LED
-- SD card module (for gateway)
+## System Design
 
-### Installation
+### Architecture
 
-1. **Clone the repository**
-   ```sh
-   git clone https://github.com/your-username/MyFreeRTOSProject.git
-   cd MyFreeRTOSProject
-   ```
-
-2. **Install Arduino libraries** via Arduino IDE Library Manager:
-   - LoRa (Arduino)
-   - Adafruit GFX Library
-   - Adafruit SSD1306
-   - Adafruit NeoPixel
-   - Adafruit INA219
-   - ArduinoJson (v7.4.3+)
-   - OneWire
-   - DallasTemperature
-
-3. **Configure your deployment**
-   ```sh
-   # IoT_Node/config.h
-   cp IoT_Node/config.h.template IoT_Node/config.h
-   # Edit IoT_Node/config.h with your parameters
-   
-   # Gateway_Node/config.h
-   cp Gateway_Node/config.h.template Gateway_Node/config.h
-   # Edit Gateway_Node/config.h with your parameters
-   ```
-
-4. **Generate security keys** (IMPORTANT!)
-   ```bash
-   # Generate AES encryption key
-   openssl rand -hex 16
-   
-   # Generate HMAC authentication key
-   openssl rand -hex 16
-   ```
-   
-   Update both `config.h` files with identical keys.
-
-5. **Upload firmware**
-   - Open `IoT_Node/IoT_Node.ino` in Arduino IDE
-   - Select board: ESP32-S3 (or your board)
-   - Upload to first ESP32 board
-   - Repeat for `Gateway_Node/Gateway_Node.ino` using ESP32 DevKit
-
-6. **Verify communication**
-   - Open Serial Monitor at 115200 baud
-   - Should see periodic sensor readings and transmissions
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Usage
-
-### IoT Measurement Node
-
-Automatically:
-- Reads sensors every 60 seconds
-- Sends data via encrypted LoRa to gateway
-- Displays readings on OLED screen
-- Triggers alerts on shake detection
-- Monitors battery status
-
-Serial output shows:
 ```
-[SENSORS TASK] Attempting to acquire gDataMutex... SUCCESS
+┌─────────────────────────────────────────────────────────┐
+│                   IoT Measurement Node                   │
+│                    (ESP32-S3 + LoRa)                    │
+├─────────────────────────────────────────────────────────┤
+│ Sensors:                                                 │
+│  • Analog water quality (pH, TDS, turbidity)            │
+│  • DS18B20 temperature probe (1-Wire)                   │
+│  • MPU6050 accelerometer (I2C)                          │
+│  • INA219 power monitor (I2C)                           │
+│                                                          │
+│ Processing:                                              │
+│  • FreeRTOS multitask execution                         │
+│  • Sensor fusion & calibration                          │
+│  • JSON serialization (~135 bytes)                      │
+│  • AES-128 ECB encryption                               │
+│  • HMAC-256 authentication                              │
+│                                                          │
+│ Output:                                                  │
+│  • LoRa transmission (spreading factor 7)               │
+│  • OLED status display                                  │
+│  • RGB LED indicators                                   │
+└────────────┬────────────────────────────────────────────┘
+             │
+             │ LoRa Link (433 MHz)
+             │ • Encrypted payload
+             │ • Sequence number
+             │ • Request-ACK handshake
+             │
+┌────────────▼────────────────────────────────────────────┐
+│                    Gateway Node                          │
+│                 (ESP32 DevKit + LoRa)                   │
+├─────────────────────────────────────────────────────────┤
+│ Reception:                                               │
+│  • LoRa RX with CRC validation                          │
+│  • HMAC verification                                    │
+│  • AES-128 ECB decryption                               │
+│  • Sequence tracking & deduplication                    │
+│                                                          │
+│ Processing:                                              │
+│  • JSON parsing                                         │
+│  • Threshold evaluation                                 │
+│  • Alert generation                                     │
+│  • Data formatting                                      │
+│                                                          │
+│ Output:                                                  │
+│  • ACK transmission                                     │
+│  • Serial console logging                               │
+│  • SD card persistent storage                           │
+│  • Audio alert playback                                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Communication Protocol
+
+**LoRa Frame Structure**:
+```
+[IV (8B)] [Encrypted Payload] [HMAC (8B)]
+```
+
+**Encrypted Payload** (AES-128 ECB):
+```
+[Device ID (4B)] [Seq# (1B)] [JSON (~120B)] [Padding]
+```
+
+**Transmission Cycle**:
+1. IoT node encrypts JSON payload with IV
+2. Computes HMAC-256 over entire message
+3. Sends via LoRa (1-2 seconds for SF=7)
+4. Waits for ACK (800ms timeout, 3 retries)
+5. Returns to RX mode between transmissions
+
+**Security Properties**:
+- Prevents message tampering (HMAC)
+- Prevents eavesdropping (AES-128)
+- Includes device identification (Device ID)
+- Detects replay attacks (sequence numbers)
+- Random IV per message (collision resistance)
+
+### FreeRTOS Task Design
+
+| Task | Core | Priority | Period | Stack | Purpose |
+|------|------|----------|--------|-------|---------|
+| SensorsTask | 0 | 2 | 60000ms | 4096B | Read analog sensors, serialize JSON, transmit via LoRa |
+| MPUTask | 0 | 3 | 50ms | 2048B | Poll accelerometer, detect shake events |
+| DisplayTask | 1 | 1 | 100ms | 2048B | Update OLED screen with latest readings |
+| uartTask | 0 | 1 | - | 2048B | Serial console logging |
+
+**Mutex Usage**:
+- `gDataMutex`: Protects `gSensorData` structure (10000ms timeout)
+- `gEventMutex`: Protects `gEventState` (10000ms timeout)
+- `gLoRaMutex`: Protects LoRa radio state (5000ms timeout)
+
+**Task Synchronization**:
+```
+SensorsTask:
+  1. Acquire gDataMutex
+  2. Read ADC (analog sensors)
+  3. Read INA219 current
+  4. Trigger DS18B20 measurement
+  5. Release gDataMutex
+  6. Create JSON from gSensorData
+  7. Acquire gLoRaMutex
+  8. Encrypt & transmit payload
+  9. Wait for ACK
+  10. Release gLoRaMutex
+```
+
+## JSON Payload Format
+
+Optimized for <180 byte LoRa transmission limit:
+
+```json
+{
+  "b": 75,          // Battery: percentage (0-100)
+  "v": 4.15,        // Battery: voltage (volts)
+  "m": 125,         // Battery: current (mA)
+  "p": 6.93,        // pH: value (0-14)
+  "ps": 10,         // pH: quality score (0-10)
+  "t": 450,         // TDS: ppm (0-2000)
+  "ts": 8,          // TDS: quality score (0-10)
+  "u": 2.41,        // Turbidity: voltage (0-5V)
+  "us": 4,          // Turbidity: quality score (0-10)
+  "tw": 17.5,       // Temperature: water (°C)
+  "tm": 37.8,       // Temperature: MPU6050 (°C)
+  "te": 38.2,       // Temperature: ESP32-S3 (°C)
+  "e": "None"       // Event: "None", "ALARM_SHAKE", etc.
+}
+```
+
+**Size Optimization**:
+- Field names: 1-2 characters (vs 8-10 in verbose version)
+- Numeric values: 1-4 bytes when serialized
+- Payload: ~135 bytes (88% efficient)
+- Safety margin: 45 bytes to 180-byte limit
+
+## Configuration System
+
+All deployment parameters are defined in header files:
+
+**IoT_Node/config.h** (included by IoT_Node.ino, app_state.h, lora_radio.cpp):
+```cpp
+// Device identification
+static const uint32_t DEVICE_ID = 0x...;
+
+// Security keys (MUST match gateway)
+static const uint8_t ENC_KEY[16] = {...};
+static const uint8_t HMAC_KEY[16] = {...};
+
+// LoRa parameters (MUST match gateway)
+static const long LORA_FREQ = 433E6;
+static const int LORA_SF = 7;
+
+// GPIO pins (hardware-specific)
+static const int LORA_NSS = 5;
+// ... more pins
+
+// Sensor configuration
+static const float PH_MIN = 6.5;
+static const float PH_MAX = 8.5;
+// ... more thresholds
+```
+
+**Gateway_Node/config.h** (included by Gateway_Node.ino):
+- Must have identical DEVICE_ID, ENC_KEY, HMAC_KEY, LoRa parameters
+- Contains additional gateway-specific thresholds
+- SD card, audio, and alert parameters
+
+**Templates Provided**:
+- `IoT_Node/config.h.template`: Reference configuration for sensor node
+- `Gateway_Node/config.h.template`: Reference configuration for gateway
+- Actual `config.h` files are ignored by .gitignore for security
+
+**Key Synchronization Requirement**:
+Single-byte difference in ENC_KEY or HMAC_KEY between nodes causes message authentication failure. Both nodes must use identical keys.
+
+## Security Implementation
+
+### Cryptographic Functions
+
+**AES-128 Encryption**:
+```cpp
+void encryptAes(uint8_t *data, int len, uint8_t *key);
+// ECB mode, PKCS#7 padding, 16-byte block alignment
+```
+
+**HMAC-256 Computation**:
+```cpp
+void computeHmac(uint8_t *data, int len, uint8_t *key, uint8_t *mac);
+// 8-byte truncated HMAC (from 32-byte SHA256)
+```
+
+**CRC-16**:
+```cpp
+uint16_t crc16Ccitt(uint8_t *data, int len);
+// Detects random transmission errors before decryption
+```
+
+### Security Assumptions & Threats
+
+**Protected Against**:
+- ✅ Eavesdropping (AES-128 encryption)
+- ✅ Message tampering (HMAC-256)
+- ✅ Replay attacks (sequence numbers)
+- ✅ Device spoofing (Device ID + HMAC)
+- ✅ Bit errors (CRC-16, HMAC)
+
+**Not Protected Against**:
+- ❌ Key compromise (physical device capture)
+- ❌ Brute-force attacks (AES-128 is strong, but endpoints may be compromised)
+- ❌ Side-channel attacks (timing analysis on decryption)
+- ❌ Gateway compromise (can then decrypt all messages)
+
+**Deployment Recommendations**:
+1. Generate unique keys per deployment (use `openssl rand -hex 16`)
+2. Store keys securely, never in version control
+3. Physical security: Encapsulate nodes in tamper-evident housings
+4. Key rotation: Change keys periodically (quarterly)
+5. Monitoring: Alert on repeated authentication failures
+
+## Debugging & Diagnostics
+
+### Serial Console Output
+
+**IoT Node** (sample output):
+```
+[LoRa] init ok
+[SENSORS TASK] Calling readSensorsRoutine (initial)
 [SENSORS TASK] Reading sensors...
-[SEND_JSON] JSON delivery successful
-[SEC ACK] seq=2
+[SEND_JSON] Starting JSON creation
+[SEND_JSON] JSON: {"b":75,"v":4.15,"m":125,...}
+[SEC_SEND] Received JSON of length: 135
+[SEC_SEND] First 100 chars: {"b":75,"v":4.15,"m":125...
+[SEC] TX payload: 135 bytes, IV: 0x1a2b3c4d5e6f7a8b
+[SEC TX] seq=1 attempt=1
+[SEC WAIT ACK] got packet len=30 seq=1
+[SEC ACK] seq=1
 ```
 
-### Gateway Node
-
-Automatically:
-- Receives encrypted messages from IoT node
-- Sends ACK confirmation
-- Logs data to SD card
-- Displays readings on serial output
-- Plays audio alerts on threshold violations
-
-Serial output shows:
+**Gateway Node** (sample output):
 ```
+Waiting for secure telemetry data...
+[ACK] seq=1 sent=yes
 ========= NOUVELLES DONNEES EAU (SECURE) =========
-SEQ         : 2
+SEQ         : 1
 BATTERIE    : 75% | 4.15 V | 125 mA
 pH          : 6.93 | Score: 10/10
 TDS         : 450 ppm | Score: 8/10
@@ -137,242 +291,120 @@ EVENT       : None
 ==================================================
 ```
 
-### Configuration
+### Common Issues & Diagnosis
 
-All settings are in `config.h` files:
+**Issue: Gateway doesn't receive messages**
+- Check: DEVICE_ID, ENC_KEY, HMAC_KEY match exactly
+- Check: LoRa frequency, SF, BW, CR parameters identical
+- Check: Antenna connections; try increasing SF to 10-12
+- Logs: Look for `[SEC] invalid plaintext length` (payload too large)
 
-**Critical (must match between nodes):**
-- `DEVICE_ID`: Node identification
-- `ENC_KEY`: AES encryption key (16 bytes)
-- `HMAC_KEY`: HMAC authentication key (16 bytes)
-- LoRa parameters: frequency, spreading factor, bandwidth, coding rate
+**Issue: Periodic measurements not transmitting (shake events work)**
+- Root cause: JSON payload >180 bytes
+- Solution: Check field names, remove unnecessary fields
+- Logs: `[SEC] invalid plaintext length: XXX (max: 180)`
 
-**Optional:**
-- Sensor thresholds (Gateway only)
-- Timing parameters
-- GPIO pins (hardware-specific)
+**Issue: Garbled serial output**
+- Check: Baud rate is 115200
+- Check: USB cable and connection
+- Try: Different USB port on computer
 
-See `IoT_Node/config.h` and `Gateway_Node/config.h` for complete reference.
+**Issue: Sensor readings stuck/not updating**
+- Check: Mutex timeout insufficient (default 10000ms)
+- Check: Sensor I2C/1-Wire communication errors
+- Logs: `[SENSORS TASK] Attempting to acquire gDataMutex... TIMEOUT`
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+## Performance Characteristics
 
-## System Architecture
+- **Sensor Read Time**: 4.2 seconds (DS18B20 conversion + analog settling)
+- **JSON Serialization**: <1ms
+- **Encryption Time**: ~5ms (AES-128 + HMAC-256)
+- **LoRa Transmission**: 1.2 seconds (SF=7, 135 bytes)
+- **ACK Round-trip**: 800ms timeout
+- **Periodic Interval**: 60 seconds
+- **Payload Efficiency**: 135/180 = 75%
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   IoT Measurement Node                   │
-│                    (ESP32-S3 + LoRa)                    │
-├─────────────────────────────────────────────────────────┤
-│ • Water Quality Sensors (pH, TDS, Turbidity)            │
-│ • Temperature Sensors (Water + MPU6050)                 │
-│ • Battery Monitor (INA219)                              │
-│ • Accelerometer (MPU6050 - Shake Detection)             │
-│ • OLED Display                                           │
-│ • RGB LED Status Indicator                              │
-└────────────┬────────────────────────────────────────────┘
-             │
-             │  Encrypted LoRa
-             │  AES-128 + HMAC-256
-             │
-┌────────────▼────────────────────────────────────────────┐
-│                    Gateway Node                          │
-│                 (ESP32 DevKit + LoRa)                   │
-├─────────────────────────────────────────────────────────┤
-│ • LoRa Receiver                                          │
-│ • Message Decryption & Verification                     │
-│ • SD Card Data Logger                                   │
-│ • Audio Alert System                                    │
-│ • Serial Monitor Display                                │
-└─────────────────────────────────────────────────────────┘
-```
+**Power Consumption** (estimated):
+- IoT Node sleep: ~50 mA
+- IoT Node during transmission: ~500 mA
+- LoRa module active RX: ~15 mA
+- Gateway node active: ~200-300 mA
 
-## JSON Payload Format
-
-Optimized for LoRa transmission (<180 bytes):
-
-```json
-{
-  "b": 75,          // Battery percentage
-  "v": 4.15,        // Battery voltage
-  "m": 125,         // Battery current (mA)
-  "p": 6.93,        // pH value
-  "ps": 10,         // pH score (0-10)
-  "t": 450,         // TDS ppm
-  "ts": 8,          // TDS score (0-10)
-  "u": 2.41,        // Turbidity voltage
-  "us": 4,          // Turbidity score (0-10)
-  "tw": 17.5,       // Water temperature
-  "tm": 37.8,       // MPU temperature
-  "te": 38.2,       // ESP32 temperature
-  "e": "None"       // Event type
-}
-```
-
-## Security
-
-### Encryption & Authentication
-- **Algorithm**: AES-128 (ECB mode) + HMAC-256
-- **Key Management**: Centralized in config.h
-- **Initialization Vector**: Random 8-byte IV per message
-- **Authentication**: 8-byte HMAC truncated
-
-### Best Practices
-1. Generate new keys for each deployment
-2. Add `config.h` to `.gitignore` to prevent accidental commits
-3. Store keys securely (password manager, HSM, etc.)
-4. Rotate keys periodically
-5. Verify board firmware integrity before deployment
-
-### .gitignore Configuration
-```
-# Security - Never commit configuration files
-*/config.h
-.vscode/
-*.pem
-*.key
-```
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Troubleshooting
-
-### Gateway doesn't receive data
-- Verify `DEVICE_ID` matches between both nodes
-- Check `ENC_KEY` and `HMAC_KEY` are identical
-- Confirm LoRa frequency matches
-- Check antenna connections and positioning
-- Look for `[SEC] invalid plaintext length` errors (payload too large)
-
-### Communication range too short
-- Increase Spreading Factor: `LORA_SF = 10` or `12`
-- Reduce Bandwidth: `LORA_BW = 62.5E3`
-- Check antenna positioning (vertical orientation optimal)
-- Remove obstacles between nodes
-
-### Periodic sensor measurements not transmitting
-- Check JSON payload size (<180 bytes)
-- Verify mutex isn't timing out (check logs)
-- Ensure sensor reads complete within timeout period
-- Check LoRa radio is in RX mode after transmissions
-
-### Serial output shows garbled text
-- Verify baud rate: 115200
-- Check USB cable connection
-- Try different USB port
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Project Structure
+## File Structure
 
 ```
 MyFreeRTOSProject/
 ├── IoT_Node/
-│   ├── IoT_Node.ino          # Main entry point
-│   ├── config.h              # Configuration (ignored by git)
-│   ├── app_state.h           # Global state definitions
-│   ├── app_state.cpp         # Initialization & helpers
-│   ├── lora_radio.h          # LoRa communication
-│   ├── lora_radio.cpp        # LoRa implementation
-│   ├── task_sensors.h        # Sensor reading task
-│   ├── task_sensors.cpp      # Sensor implementation
-│   ├── task_mpu.h            # Accelerometer task
-│   ├── task_mpu.cpp          # MPU6050 implementation
-│   ├── task_display.h        # Display task
-│   ├── task_display.cpp      # OLED implementation
-│   ├── display_oled.h        # Display utilities
-│   └── display_oled.cpp      # Display functions
+│   ├── IoT_Node.ino               # Firmware entry point
+│   ├── config.h                   # Configuration (git-ignored)
+│   ├── config.h.template          # Reference template
+│   ├── app_state.h                # Global state structs
+│   ├── app_state.cpp              # State initialization
+│   ├── lora_radio.h               # LoRa API
+│   ├── lora_radio.cpp             # LoRa implementation (encryption, TX)
+│   ├── task_sensors.h             # Sensor reading task
+│   ├── task_sensors.cpp           # Sensor reads, JSON creation
+│   ├── task_mpu.h                 # Accelerometer task
+│   ├── task_mpu.cpp               # MPU6050, shake detection
+│   ├── task_display.h             # OLED display task
+│   ├── task_display.cpp           # Display rendering
+│   ├── display_oled.h             # Display utilities
+│   └── display_oled.cpp           # Graphics functions
 │
 ├── Gateway_Node/
-│   ├── Gateway_Node.ino      # Main entry point
-│   ├── config.h              # Configuration (ignored by git)
-│   └── (compiled from main)
+│   ├── Gateway_Node.ino           # Firmware entry point
+│   ├── config.h                   # Configuration (git-ignored)
+│   ├── config.h.template          # Reference template
+│   └── (single-file firmware)
 │
-├── .gitignore                # Git ignore rules
-├── README.md                 # This file
-└── LICENSE                   # Project license
+├── .gitignore                     # Ignores config.h, .vscode
+├── README.md                      # This file
+└── LICENSE                        # MIT License
 ```
 
-## FreeRTOS Task Structure
+## Development History
 
-| Task | Priority | Period | Purpose |
-|------|----------|--------|---------|
-| SensorsTask | 2 | 60s | Read water sensors, transmit data |
-| MPUTask | 3 | 50ms | Read accelerometer, detect shakes |
-| DisplayTask | 1 | 100ms | Update OLED display |
-| Core0 | - | - | System tasks |
-| Core1 | - | - | User tasks |
+**Key Design Decisions**:
 
-## Performance Metrics
+1. **LoRa Protocol**: Request-ACK handshake ensures delivery; automatic retries recover from packet loss
+2. **JSON Field Names**: Short names (1-2 chars) chosen over readability to fit 180-byte limit
+3. **FreeRTOS Multitasking**: Separates sensor I/O, LoRa communication, and display updates to meet real-time constraints
+4. **Centralized Config**: Single config.h per node avoids duplicate constant definitions
+5. **Encryption in Firmware**: AES-128 ECB + HMAC-256 computed on device; IV generated per message
+6. **Dual-Core Design**: Sensor reading + display on Core 0; system tasks on Core 1
 
-- **Sensor Read Time**: ~4.2 seconds
-- **JSON Serialization**: <1ms
-- **LoRa Transmission**: 1-2 seconds (SF=7)
-- **ACK Wait Time**: 800ms
-- **Periodic Interval**: 60 seconds
-- **Payload Size**: ~135 bytes (88% efficient)
+**Evolution**:
+- v1: Initial prototype with basic sensor reading and LoRa transmission
+- v2: Added AES-128 encryption and HMAC authentication
+- v3: Implemented FreeRTOS task management
+- v4: Added battery current monitoring and ESP32 temperature
+- v5: Optimized JSON payload (224→135 bytes) to fit LoRa limit
+- v6: Centralized configuration system
 
-## Roadmap
+## Known Limitations
 
-- [x] Water quality sensor integration
-- [x] LoRa encrypted communication
-- [x] FreeRTOS task management
-- [x] Battery monitoring
-- [x] Shake event detection
-- [x] Real-time display
-- [ ] Mobile app integration
-- [ ] Cloud data synchronization
-- [ ] Web dashboard
-- [ ] Multi-node support
+1. **Single IoT Node**: Gateway designed for one sensor node; would need sequence tracking for multiple nodes
+2. **No OTA Updates**: Firmware updates require physical access and USB upload
+3. **Limited Storage**: OLED only shows current readings; no history on display
+4. **Fixed LoRa SF**: Spreading Factor not adaptive to link quality
+5. **No Power Management**: Node doesn't sleep between transmissions; assumes external power or large battery
+6. **Manual Key Management**: Keys must be synchronized manually between nodes
+
+## Future Enhancements
+
+- [ ] Multi-node support (multiple sensors → single gateway)
+- [ ] Adaptive LoRa spreading factor
+- [ ] Mobile app for remote monitoring
+- [ ] Web dashboard with historical graphs
 - [ ] OTA firmware updates
-
-See the [open issues](https://github.com/your-username/MyFreeRTOSProject/issues) for a full list of proposed features and known issues.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Contributing
-
-Contributions are what make the open source community such an amazing place. Any contributions you make are **greatly appreciated**.
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## License
-
-Distributed under the MIT License. See `LICENSE.txt` for more information.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Contact
-
-Project Maintainer - [@yourtwitter](https://twitter.com/yourtwitter) - your.email@example.com
-
-Project Repository: [https://github.com/your-username/MyFreeRTOSProject](https://github.com/your-username/MyFreeRTOSProject)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-## Acknowledgments
-
-* Arduino community for excellent IoT libraries
-* LoRa-Alliance for long-range communication specs
-* FreeRTOS for real-time operating system
-* Adafruit for sensor libraries and drivers
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
+- [ ] Cloud data synchronization
+- [ ] Low-power sleep modes
+- [ ] Solar power integration
+- [ ] GPS location tracking
+- [ ] Temperature-compensated calibration
 
 ---
 
-[Arduino.cc]: https://img.shields.io/badge/Arduino-00979D?style=for-the-badge&logo=Arduino&logoColor=white
-[Arduino-url]: https://www.arduino.cc
-[ESP32]: https://img.shields.io/badge/ESP32-E7352C?style=for-the-badge&logo=espressif&logoColor=white
-[ESP32-url]: https://www.espressif.com
-[FreeRTOS]: https://img.shields.io/badge/FreeRTOS-3498DB?style=for-the-badge
-[FreeRTOS-url]: https://www.freertos.org
-[LoRa]: https://img.shields.io/badge/LoRa-1F77B9?style=for-the-badge
-[LoRa-url]: https://lora-alliance.org
-[ArduinoJson]: https://img.shields.io/badge/ArduinoJson-5C6AC4?style=for-the-badge
-[ArduinoJson-url]: https://arduinojson.org
+**Author**: Water Quality IoT Project  
+**License**: MIT  
+**Repository**: Personal research project
