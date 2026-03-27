@@ -238,12 +238,14 @@ bool buildSecureFrame(
   memcpy(&outFrame[pos], nonce, GCM_NONCE_LEN); pos += GCM_NONCE_LEN;
   writeU16BE(&outFrame[pos], plainLen);  pos += 2;
 
-  // Encrypt payload using GCM with header as Additional Authenticated Data (AAD)
+  // Encrypt payload using GCM with header (including payload len) as Additional Authenticated Data (AAD)
   uint8_t *ciphertext = &outFrame[pos];
   uint8_t tag[GCM_TAG_LEN];
+  
+  // AAD includes everything up to and including the payload length field
+  size_t aadLen = pos;  // pos = HEADER_LEN at this point
 
-  // We'll need to create a mirror encrypt function for gateway
-  // For now, use simple AES-GCM encryption
+  // Inline GCM encryption (same as IoT node)
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
 
@@ -257,7 +259,7 @@ bool buildSecureFrame(
     MBEDTLS_GCM_ENCRYPT,
     plainLen,
     nonce, GCM_NONCE_LEN,
-    outFrame, HEADER_LEN - 2,  // AAD = header without plainLen field
+    outFrame, aadLen,  // AAD = full header including payload length
     plain,
     ciphertext,
     GCM_TAG_LEN, tag
@@ -359,8 +361,8 @@ bool parseAndVerifyDataFrame(
   const uint8_t *cipher = &frame[cipherPos];
   const uint8_t *tag = &frame[tagPos];
 
-  // Decrypt and verify authentication tag (AAD = header without the payload length field that's part of the encrypted portion)
-  if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN - 2, tag, plainOut)) {
+  // Decrypt and verify authentication tag (AAD = header including payload length field)
+  if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN, tag, plainOut)) {
     Serial.println("[GCM] Authentication failed - corrupted or invalid packet");
     return false;
   }

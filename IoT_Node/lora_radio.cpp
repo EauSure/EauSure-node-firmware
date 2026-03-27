@@ -179,17 +179,20 @@ static bool buildSecureFrame(
   memcpy(&outFrame[pos], nonce, GCM_NONCE_LEN); pos += GCM_NONCE_LEN;
   writeU16BE(&outFrame[pos], plainLen);  pos += 2;
 
-  // Encrypt payload using GCM with header as Additional Authenticated Data (AAD)
+  // Encrypt payload using GCM with header (including payload len) as Additional Authenticated Data (AAD)
   uint8_t *ciphertext = &outFrame[pos];
   uint8_t tag[GCM_TAG_LEN];
 
+  // AAD includes everything up to and including the payload length field
+  size_t aadLen = pos;  // pos = HEADER_LEN at this point
+
   if (plainLen > 0) {
-    if (!aesgcmEncrypt(plain, plainLen, nonce, outFrame, pos, ciphertext, tag)) {
+    if (!aesgcmEncrypt(plain, plainLen, nonce, outFrame, aadLen, ciphertext, tag)) {
       return false;
     }
   } else {
     // For empty payload, still generate tag
-    if (!aesgcmEncrypt(nullptr, 0, nonce, outFrame, pos, nullptr, tag)) {
+    if (!aesgcmEncrypt(nullptr, 0, nonce, outFrame, aadLen, nullptr, tag)) {
       return false;
     }
   }
@@ -276,8 +279,8 @@ static bool verifySecureFrame(
   const uint8_t *cipher = &frame[cipherPos];
   const uint8_t *tag = &frame[tagPos];
 
-  // Decrypt and verify authentication tag
-  if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN - 2, tag, outPlain)) {
+  // Decrypt and verify authentication tag (AAD = full header including payload length)
+  if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN, tag, outPlain)) {
     Serial.println("[GCM] Authentication failed - corrupted or invalid packet");
     return false;
   }
