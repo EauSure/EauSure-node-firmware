@@ -179,6 +179,18 @@ static bool buildSecureFrame(
   memcpy(&outFrame[pos], nonce, GCM_NONCE_LEN); pos += GCM_NONCE_LEN;
   writeU16BE(&outFrame[pos], plainLen);  pos += 2;
 
+  Serial.print("[GCM SEND] Building frame: ver=");
+  Serial.print(PROTO_VERSION);
+  Serial.print(" type=");
+  Serial.print(msgType);
+  Serial.print(" seq=");
+  Serial.print(seq);
+  Serial.print(" plainLen=");
+  Serial.print(plainLen);
+  Serial.print(" aadLen=");
+  Serial.print(pos);
+  Serial.println();
+
   // Encrypt payload using GCM with header (including payload len) as Additional Authenticated Data (AAD)
   uint8_t *ciphertext = &outFrame[pos];
   uint8_t tag[GCM_TAG_LEN];
@@ -188,14 +200,25 @@ static bool buildSecureFrame(
 
   if (plainLen > 0) {
     if (!aesgcmEncrypt(plain, plainLen, nonce, outFrame, aadLen, ciphertext, tag)) {
+      Serial.println("[GCM] Encryption failed");
       return false;
     }
   } else {
     // For empty payload, still generate tag
     if (!aesgcmEncrypt(nullptr, 0, nonce, outFrame, aadLen, nullptr, tag)) {
+      Serial.println("[GCM] Encryption failed (empty payload)");
       return false;
     }
   }
+
+  Serial.print("[GCM] Encrypted ");
+  Serial.print(plainLen);
+  Serial.print(" bytes, tag: ");
+  for (int i = 0; i < 4; i++) {
+    Serial.print(tag[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println("...");
 
   pos += plainLen;
 

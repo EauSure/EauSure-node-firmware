@@ -326,6 +326,17 @@ bool parseAndVerifyDataFrame(
   const uint8_t *nonce = &frame[10];
   uint16_t cipherLen = readU16BE(&frame[10 + GCM_NONCE_LEN]);
 
+  Serial.print("[GCM RX] Parsing frame: ver=");
+  Serial.print(version);
+  Serial.print(" type=");
+  Serial.print(msgType);
+  Serial.print(" seq=");
+  Serial.print(seq);
+  Serial.print(" cipherLen=");
+  Serial.print(cipherLen);
+  Serial.print(" frameLen=");
+  Serial.println(frameLen);
+
   // Verify header fields
   if (version != PROTO_VERSION) {
     Serial.println("[GCM] Version mismatch");
@@ -361,11 +372,28 @@ bool parseAndVerifyDataFrame(
   const uint8_t *cipher = &frame[cipherPos];
   const uint8_t *tag = &frame[tagPos];
 
+  Serial.print("[GCM] Decrypting: cipherPos=");
+  Serial.print(cipherPos);
+  Serial.print(" tagPos=");
+  Serial.print(tagPos);
+  Serial.print(" aadLen=");
+  Serial.print(HEADER_LEN);
+  Serial.print(" tag: ");
+  for (int i = 0; i < 4; i++) {
+    Serial.print(tag[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println("...");
+
   // Decrypt and verify authentication tag (AAD = header including payload length field)
   if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN, tag, plainOut)) {
     Serial.println("[GCM] Authentication failed - corrupted or invalid packet");
     return false;
   }
+
+  Serial.print("[GCM] Decryption successful: ");
+  Serial.print(cipherLen);
+  Serial.println(" bytes");
 
   seqOut = seq;
   plainLenOut = cipherLen;
