@@ -229,8 +229,9 @@ void checkShakeAndSend() {
       rgbFlash(255, 0, 80, 700);
 
       StaticJsonDocument<64> doc;
-      doc["event"] = "ALARM_SHAKE";
-      doc["dg"] = round(dynamicG * 100.0) / 100.0;
+      doc["e"] = "ALARM_SHAKE";  // Use compressed field name to match sensor JSON format
+      doc["ag"] = round(amag * 100.0) / 100.0;        // Total acceleration magnitude (G)
+      doc["dg"] = round(dynamicG * 100.0) / 100.0;    // Dynamic acceleration (deviation from 1G)
 
       String out;
       serializeJson(doc, out);

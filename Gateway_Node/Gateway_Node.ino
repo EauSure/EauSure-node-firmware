@@ -728,6 +728,15 @@ void handleSecurePacket(const uint8_t *frame, size_t frameLen, int rssi, float s
   }
 
   Serial.printf("EVENT       : %s\n", event.c_str());
+  
+  if (event == "ALARM_SHAKE") {
+    if (doc.containsKey("ag")) {
+      Serial.printf("SHAKE FORCE : %.2f G (dynamic: %.2f G)\n",
+                    doc["ag"].as<float>(),
+                    doc["dg"].as<float>());
+    }
+  }
+  
   Serial.println("==================================================\n");
 
   if (event == "ALARM_SHAKE" && !alarmRunning) {
