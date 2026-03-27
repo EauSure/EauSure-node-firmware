@@ -118,6 +118,7 @@ static bool loraReadRaw(uint8_t *buf, size_t cap, size_t &outLen, uint32_t timeo
     if (packetSize > 0) {
       if ((size_t)packetSize > cap) {
         while (LoRa.available()) LoRa.read();
+        LoRa.receive();
         return false;
       }
       size_t i = 0;
@@ -125,10 +126,12 @@ static bool loraReadRaw(uint8_t *buf, size_t cap, size_t &outLen, uint32_t timeo
         buf[i++] = (uint8_t)LoRa.read();
       }
       outLen = i;
+      LoRa.receive();
       return true;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
+  LoRa.receive();
   return false;
 }
 
@@ -208,8 +211,15 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs) {
   size_t len = 0;
 
   if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
+    Serial.print("[SEC WAIT ACK] timeout seq=");
+    Serial.println(seq);
     return false;
   }
+
+  Serial.print("[SEC WAIT ACK] got packet len=");
+  Serial.print((int)len);
+  Serial.print(" seq=");
+  Serial.println(seq);
 
   return verifySecureFrame(buf, len, MSG_TYPE_ACK, seq);
 }
@@ -234,45 +244,7 @@ bool loraInit() {
   Serial.println("[LoRa] init ok");
   return true;
 }
-bool secureReceiveJson(String &outJson) {
-  int packetSize = LoRa.parsePacket();
-  if (!packetSize) return false;
 
-  if (packetSize < (int)(sizeof(FrameHeader) + HMAC_SIZE)) return false;
-
-  uint8_t buffer[256];
-  int len = LoRa.readBytes(buffer, packetSize);
-
-  FrameHeader hdr;
-  memcpy(&hdr, buffer, sizeof(hdr));
-
-  if (hdr.magic != FRAME_MAGIC) return false;
-
-  uint16_t payloadLen = hdr.payloadLen;
-  if (payloadLen > 200) return false;
-
-  uint8_t *cipher = buffer + sizeof(hdr);
-  uint8_t *recvMac = buffer + sizeof(hdr) + payloadLen;
-
-  // CRC check
-  uint16_t calcCrc = crc16_ccitt(cipher, payloadLen);
-  if (calcCrc != hdr.crc16) return false;
-
-  // HMAC check
-  uint8_t calcMac[HMAC_SIZE];
-  computeHMAC(cipher, payloadLen, calcMac);
-  if (memcmp(calcMac, recvMac, HMAC_SIZE) != 0) return false;
-
-  // decrypt
-  uint8_t plain[200];
-  memcpy(plain, cipher, payloadLen);
-  xorCrypt(plain, payloadLen);
-
-  plain[payloadLen] = '\0';
-  outJson = String((char*)plain);
-
-  return true;
-}
 
 // keep only for temporary debug/manual plaintext tests
 bool loraSendText(const String& payload) {
@@ -293,14 +265,28 @@ bool secureSendJson(const String& json) {
   uint8_t plain[MAX_PLAIN_LEN];
   size_t plainLen = json.length();
 
+  Serial.print("[SEC_SEND] Received JSON of length: ");
+  Serial.println((int)plainLen);
+  Serial.print("[SEC_SEND] First 100 chars: ");
+  if (plainLen > 100) {
+    Serial.println(json.substring(0, 100));
+  } else {
+    Serial.println(json);
+  }
+
   if (plainLen == 0 || plainLen > MAX_PLAIN_LEN) {
-    Serial.println("[SEC] invalid plaintext length");
+    Serial.print("[SEC] invalid plaintext length: ");
+    Serial.print((int)plainLen);
+    Serial.print(" (max: ");
+    Serial.print((int)MAX_PLAIN_LEN);
+    Serial.println(")");
     return false;
   }
 
   memcpy(plain, json.c_str(), plainLen);
 
   if (gLoRaMutex && xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+    Serial.println("[SEC_SEND] ERROR: Could not acquire LoRa mutex");
     return false;
   }
 
@@ -338,39 +324,58 @@ bool secureSendJson(const String& json) {
     Serial.println(seq);
   }
 
+  LoRa.receive();
   if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
   return delivered;
 }
 
 void sendJsonData() {
+  Serial.println("[SEND_JSON] Starting JSON creation");
+  
   StaticJsonDocument<512> doc;
 
-  doc["bat_pct"] = gSensorData.battPercent;
-  doc["bat_v"]   = round(gSensorData.battLoadV * 100.0) / 100.0;
-  doc["bat_ma"]  = round(gSensorData.battCurrentmA);
+  // Optimized field names (shorter) to fit within 180-byte limit
+  doc["b"] = gSensorData.battPercent;
+  doc["v"] = round(gSensorData.battLoadV * 100.0) / 100.0;
+  doc["m"] = round(gSensorData.battCurrentmA);
 
-  doc["ph_val"]  = round(gSensorData.lastPhValue * 100.0) / 100.0;
-  doc["ph_v"]    = round(gSensorData.lastPhVoltage * 100.0) / 100.0;
-  doc["ph_10"]   = gSensorData.phScale10;
-  doc["ph_msg"]  = getPhConclusion(gSensorData.lastPhValue);
+  doc["p"]  = round(gSensorData.lastPhValue * 100.0) / 100.0;
+  doc["ps"] = gSensorData.phScale10;
 
-  doc["tds_ppm"] = round(gSensorData.lastTdsValue);
-  doc["tds_10"]  = gSensorData.tdsScale10;
-  doc["tds_msg"] = getTdsConclusion(round(gSensorData.lastTdsValue));
+  doc["t"]  = round(gSensorData.lastTdsValue);
+  doc["ts"] = gSensorData.tdsScale10;
 
-  doc["turb_v"]  = round(gSensorData.lastTurbSensorVoltage * 100.0) / 100.0;
-  doc["turb_10"] = gSensorData.turbScale10;
-  doc["turb_msg"] = getTurbConclusion(gSensorData.turbScale10);
+  doc["u"]  = round(gSensorData.lastTurbSensorVoltage * 100.0) / 100.0;
+  doc["us"] = gSensorData.turbScale10;
 
-  doc["t_water"] = round(gSensorData.waterTempC * 10.0) / 10.0;
-  doc["t_mpu"]   = round(gSensorData.mpuTempC * 10.0) / 10.0;
-  doc["event"]   = gEventState.lastEvent;
+  doc["tw"] = round(gSensorData.waterTempC * 10.0) / 10.0;
+  doc["tm"] = round(gSensorData.mpuTempC * 10.0) / 10.0;
+  doc["te"] = round(gSensorData.espTempC * 10.0) / 10.0;
+  doc["e"]  = gEventState.lastEvent;
 
   String jsonString;
-  serializeJson(doc, jsonString);
+  size_t written = serializeJson(doc, jsonString);
+  
+  Serial.print("[SEND_JSON] Serialized ");
+  Serial.print((int)written);
+  Serial.print(" bytes, JSON length: ");
+  Serial.println((int)jsonString.length());
+  Serial.print("[SEND_JSON] JSON: ");
+  Serial.println(jsonString);
 
+  if (jsonString.length() == 0) {
+    Serial.println("[SEND_JSON] ERROR: JSON serialization produced empty string");
+    return;
+  }
+
+  Serial.print("[SEND_JSON] Calling secureSendJson with ");
+  Serial.print((int)jsonString.length());
+  Serial.println(" bytes");
+  
   if (!secureSendJson(jsonString)) {
     Serial.println("[SEC] delivery failed after retries");
+  } else {
+    Serial.println("[SEND_JSON] JSON delivery successful");
   }
 }
 void handleCommand(const String &json) {

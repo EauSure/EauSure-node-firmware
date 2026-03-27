@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "config.h"
 #include "app_state.h"
 #include "task_sensors.h"
 #include "task_display.h"

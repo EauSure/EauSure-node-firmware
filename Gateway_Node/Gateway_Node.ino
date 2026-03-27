@@ -3,6 +3,7 @@
 #include <LoRa.h>
 #include <ArduinoJson.h>
 
+#include "config.h"
 #include "AudioTools.h"
 #include <Update.h>
 
@@ -11,43 +12,7 @@
 
 using namespace audio_tools;
 
-// =====================================================
-// LoRa pins (ESP32 DevKit) - SPI bus #1
-// =====================================================
-static const int LORA_NSS  = 5;
-static const int LORA_SCK  = 18;
-static const int LORA_MISO = 19;
-static const int LORA_MOSI = 23;
-static const int LORA_RST  = 32;
-static const int LORA_DIO0 = 33;
-
-// Reserved for future FUOTA / advanced IRQ usage
-static const int LORA_DIO1 = 17;
-static const int LORA_DIO2 = 16;
-
-static const long LORA_FREQ = 433E6;
-static const int  LORA_SF   = 7;
-static const long LORA_BW   = 125E3;
-static const int  LORA_CR   = 5;
-static const uint8_t LORA_SYNC_WORD = 0x34;
-
-// =====================================================
-// Secure protocol config
-// MUST MATCH THE NODE
-// =====================================================
-static const uint8_t  PROTO_VERSION = 1;
-static const uint32_t DEVICE_ID     = 0xEA500123;   // must match node exactly
-
-static const uint8_t ENC_KEY[16] = {
-  0x11, 0x29, 0x3A, 0x47, 0x58, 0x61, 0x72, 0x8C,
-  0x90, 0xAB, 0xBC, 0xCD, 0xDE, 0xE1, 0xF2, 0x04
-};
-
-static const uint8_t HMAC_KEY[16] = {
-  0x21, 0x39, 0x4A, 0x57, 0x68, 0x71, 0x82, 0x9C,
-  0xA0, 0xBB, 0xCC, 0xDD, 0xEE, 0xF1, 0x02, 0x14
-};
-
+// Secure protocol specific constants
 static const uint8_t MSG_TYPE_DATA = 0x01;
 static const uint8_t MSG_TYPE_ACK  = 0x02;
 
@@ -522,12 +487,14 @@ void queueAlert(const char* path) {
 void collectAlertFiles(JsonDocument& doc, int rssi) {
   clearAlertQueue();
 
-  String event = doc["event"] | "";
+  String event = doc["e"] | "";
 
-  int batPct = doc["bat_pct"] | 100;
-  int ph10   = doc["ph_10"] | 10;
-  int tds10  = doc["tds_10"] | 10;
-  int turb10 = doc["turb_10"] | 10;
+  int batPct = doc["b"] | 100;
+  float batMa = doc["m"] | 0.0f;
+  int ph10   = doc["ps"] | 10;
+  int tds10  = doc["ts"] | 10;
+  int turb10 = doc["us"] | 10;
+  float espTemp = doc["te"] | 0.0f;
 
   if (event == "ALARM_SHAKE") {
     queueAlert("/alerts/alert_fall.wav");
@@ -675,48 +642,48 @@ void handleSecurePacket(const uint8_t *frame, size_t frameLen, int rssi, float s
   lastAcceptedSeq = seq;
   sendSecureAck(seq);
 
-  String event = doc["event"] | "None";
+  String event = doc["e"] | "None";
 
   Serial.println("\n========= NOUVELLES DONNEES EAU (SECURE) =========");
   Serial.printf("SEQ         : %lu\n", (unsigned long)seq);
   Serial.printf("Signal LoRa : RSSI %d dBm | SNR %.1f dB\n", rssi, snr);
   Serial.println("--------------------------------------------------");
 
-  if (doc.containsKey("bat_pct")) {
-    Serial.printf("BATTERIE    : %d%% | %.2f V | %d mA\n",
-                  doc["bat_pct"].as<int>(),
-                  doc["bat_v"].as<float>(),
-                  doc["bat_ma"].as<int>());
+  if (doc.containsKey("b")) {
+    Serial.printf("BATTERIE    : %d%% | %.2f V | %.0f mA\n",
+                  doc["b"].as<int>(),
+                  doc["v"].as<float>(),
+                  doc["m"].as<float>());
   }
 
-  if (doc.containsKey("ph_val")) {
-    Serial.printf("pH          : %.2f | Tension: %.2f V | Score: %d/10 (%s)\n",
-                  doc["ph_val"].as<float>(),
-                  doc["ph_v"].as<float>(),
-                  doc["ph_10"].as<int>(),
-                  doc["ph_msg"].as<String>().c_str());
+  if (doc.containsKey("p")) {
+    Serial.printf("pH          : %.2f | Score: %d/10\n",
+                  doc["p"].as<float>(),
+                  doc["ps"].as<int>());
   }
 
-  if (doc.containsKey("tds_ppm")) {
-    Serial.printf("TDS         : %d ppm | Score: %d/10 (%s)\n",
-                  doc["tds_ppm"].as<int>(),
-                  doc["tds_10"].as<int>(),
-                  doc["tds_msg"].as<String>().c_str());
+  if (doc.containsKey("t")) {
+    Serial.printf("TDS         : %d ppm | Score: %d/10\n",
+                  doc["t"].as<int>(),
+                  doc["ts"].as<int>());
   }
 
-  if (doc.containsKey("turb_v")) {
-    Serial.printf("TURBIDITE   : %.2f V | Score: %d/10 (%s)\n",
-                  doc["turb_v"].as<float>(),
-                  doc["turb_10"].as<int>(),
-                  doc["turb_msg"].as<String>().c_str());
+  if (doc.containsKey("u")) {
+    Serial.printf("TURBIDITE   : %.2f V | Score: %d/10\n",
+                  doc["u"].as<float>(),
+                  doc["us"].as<int>());
   }
 
-  if (doc.containsKey("t_water")) {
-    Serial.printf("TEMP. EAU   : %.1f °C\n", doc["t_water"].as<float>());
+  if (doc.containsKey("tw")) {
+    Serial.printf("TEMP. EAU   : %.1f °C\n", doc["tw"].as<float>());
   }
 
-  if (doc.containsKey("t_mpu")) {
-    Serial.printf("TEMP. CARTE : MPU %.1f °C\n", doc["t_mpu"].as<float>());
+  if (doc.containsKey("tm")) {
+    Serial.printf("TEMP. CARTE : MPU %.1f °C\n", doc["tm"].as<float>());
+  }
+
+  if (doc.containsKey("te")) {
+    Serial.printf("TEMP. ESP32 : S3 %.1f °C\n", doc["te"].as<float>());
   }
 
   Serial.printf("EVENT       : %s\n", event.c_str());

@@ -10,67 +10,22 @@ bool inaOk = false;
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
-const uint8_t ACCEL_RANGE = 2;
 bool mpuOk = false;
 
 Adafruit_NeoPixel pixel(RGB_COUNT, RGB_PIN, NEO_GRB + NEO_KHZ800);
 bool rgbActive = false;
 uint32_t rgbOffAt = 0;
 
-const int LORA_RST  = 9;
-const int LORA_DIO0 = 8;
-const int LORA_NSS  = 10;
-const int LORA_MOSI = 11;
-const int LORA_MISO = 13;
-const int LORA_SCK  = 12;
-const int LORA_DIO1 = 4;
-const int LORA_DIO2 = 16;
-
-const long LORA_FREQ = 433E6;
-const int  LORA_SF   = 7;
-const long LORA_BW   = 125E3;
-const int  LORA_CR   = 5;
-const uint8_t LORA_SYNC_WORD = 0x34;
-
-const float BATT_EMPTY_V = 3.30f;
-const float BATT_FULL_V  = 4.20f;
-
-const uint32_t SENSOR_WARMUP_MS = 300;
-const uint32_t SENSOR_RC_SETTLE_MS = 2500;
-const float TURB_DIVIDER_RTOP = 15000.0f;
-const float TURB_DIVIDER_RBOT = 10000.0f;
-
-const float SHAKE_THRESHOLD_G = 1.1f;
-const uint32_t SHAKE_COOLDOWN_MS = 1500;
-
-const uint32_t OLED_UPDATE_MS = 100;
-const uint32_t AUTO_READ_INTERVAL_MS = 60000;
-
 SensorData gSensorData;
 EventState gEventState;
 
-float phVoltageAtNeutral = 2.63f;
-float phSlope = -0.18f;
+float phVoltageAtNeutral = PH_VOLTAGE_AT_NEUTRAL;
+float phSlope = PH_SLOPE;
 
 SemaphoreHandle_t gDataMutex = nullptr;
 SemaphoreHandle_t gI2CMutex  = nullptr;
 SemaphoreHandle_t gLoRaMutex = nullptr;
 
-const uint8_t  PROTO_VERSION = 1;
-const uint32_t DEVICE_ID = 0xEA500123;   // to be changed later!
-
-const uint8_t ENC_KEY[16] = {
-  0x11, 0x29, 0x3A, 0x47, 0x58, 0x61, 0x72, 0x8C,
-  0x90, 0xAB, 0xBC, 0xCD, 0xDE, 0xE1, 0xF2, 0x04
-};
-
-const uint8_t HMAC_KEY[16] = {
-  0x21, 0x39, 0x4A, 0x57, 0x68, 0x71, 0x82, 0x9C,
-  0xA0, 0xBB, 0xCC, 0xDD, 0xEE, 0xF1, 0x02, 0x14
-};
-
-const uint8_t  ACK_RETRY_MAX = 3;
-const uint32_t ACK_TIMEOUT_MS = 800;
 uint32_t gTxSeq = 1;
 
 bool i2cWrite8(uint8_t addr, uint8_t reg, uint8_t val) {

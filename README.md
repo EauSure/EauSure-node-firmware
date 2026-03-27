@@ -1,182 +1,337 @@
-<!-- Improved compatibility of back to top link: See: https://github.com/othneildrew/Best-README-Template/pull/73 -->
-<a id="readme-top"></a>
-<!--
-*** Thanks for checking out the Best-README-Template. If you have a suggestion
-*** that would make this better, please fork the repo and create a pull request
-*** or simply open an issue with the tag "enhancement".
-*** Don't forget to give the project a star!
-*** Thanks again! Now go create something AMAZING! :D
--->
+# IoT Water Quality Monitoring System with LoRa
 
+Real-time water quality monitoring using FreeRTOS, ESP32, and LoRa communication with end-to-end encryption.
 
-
-<!-- PROJECT SHIELDS -->
-<!--
-*** I'm using markdown "reference style" links for readability.
-*** Reference links are enclosed in brackets [ ] instead of parentheses ( ).
-*** See the bottom of this document for the declaration of the reference variables
-*** for contributors-url, forks-url, etc. This is an optional, concise syntax you may use.
-*** https://www.markdownguide.org/basic-syntax/#reference-style-links
--->
-[![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
-[![project_license][license-shield]][license-url]
-[![LinkedIn][linkedin-shield]][linkedin-url]
-
-
-
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-  <a href="https://github.com/github_username/repo_name">
-    <img src="images/logo.png" alt="Logo" width="80" height="80">
-  </a>
-
-<h3 align="center">project_title</h3>
-
-  <p align="center">
-    project_description
-    <br />
-    <a href="https://github.com/github_username/repo_name"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://github.com/github_username/repo_name">View Demo</a>
-    &middot;
-    <a href="https://github.com/github_username/repo_name/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
-    &middot;
-    <a href="https://github.com/github_username/repo_name/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
-  </p>
-</div>
-
-
-
-<!-- TABLE OF CONTENTS -->
-<details>
-  <summary>Table of Contents</summary>
-  <ol>
-    <li>
-      <a href="#about-the-project">About The Project</a>
-      <ul>
-        <li><a href="#built-with">Built With</a></li>
-      </ul>
-    </li>
-    <li>
-      <a href="#getting-started">Getting Started</a>
-      <ul>
-        <li><a href="#prerequisites">Prerequisites</a></li>
-        <li><a href="#installation">Installation</a></li>
-      </ul>
-    </li>
-    <li><a href="#usage">Usage</a></li>
-    <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#contact">Contact</a></li>
-    <li><a href="#acknowledgments">Acknowledgments</a></li>
-  </ol>
-</details>
-
-
-
-<!-- ABOUT THE PROJECT -->
 ## About The Project
 
-[![Product Name Screen Shot][product-screenshot]](https://example.com)
+A comprehensive IoT system that monitors water quality parameters (pH, TDS, turbidity, temperature) using distributed sensor nodes with secure LoRa communication to a central gateway. Features real-time alerts, SD card logging, and audio notifications.
 
-Here's a blank template to get started. To avoid retyping too much info, do a search and replace with your text editor for the following: `github_username`, `repo_name`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `project_title`, `project_description`, `project_license`
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
+**Key Features:**
+- 🌊 Multi-parameter water quality monitoring (pH, TDS, turbidity, temperature, battery)
+- 📡 Long-range LoRa communication (up to 10+ km in optimal conditions)
+- 🔒 End-to-end encryption (AES-128 + HMAC-256)
+- 🎛️ FreeRTOS real-time task management
+- 🎵 Audio alert system on gateway
+- 💾 SD card data logging
+- 📊 Real-time OLED display on sensor node
+- 🔋 Battery monitoring and optimization
+- 🌐 Shake detection (accelerometer-based event triggering)
 
 ### Built With
 
-* [![Next][Next.js]][Next-url]
-* [![React][React.js]][React-url]
-* [![Vue][Vue.js]][Vue-url]
-* [![Angular][Angular.io]][Angular-url]
-* [![Svelte][Svelte.dev]][Svelte-url]
-* [![Laravel][Laravel.com]][Laravel-url]
-* [![Bootstrap][Bootstrap.com]][Bootstrap-url]
-* [![JQuery][JQuery.com]][JQuery-url]
+* [![Arduino][Arduino.cc]][Arduino-url]
+* [![ESP32][ESP32]][ESP32-url]
+* [![FreeRTOS][FreeRTOS]][FreeRTOS-url]
+* [![LoRa][LoRa]][LoRa-url]
+* [![ArduinoJson][ArduinoJson]][ArduinoJson-url]
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-
-
-<!-- GETTING STARTED -->
 ## Getting Started
-
-This is an example of how you may give instructions on setting up your project locally.
-To get a local copy up and running follow these simple example steps.
 
 ### Prerequisites
 
-This is an example of how to list things you need to use the software and how to install them.
-* npm
-  ```sh
-  npm install npm@latest -g
-  ```
+- Arduino IDE 2.0 or later
+- ESP32 Dev Kit or ESP32-S3 board
+- LoRa module (SX1276 or similar)
+- Water quality sensors (pH, TDS, Turbidity)
+- DS18B20 temperature sensor
+- MPU6050 accelerometer
+- INA219 current monitor
+- OLED display (SSD1306)
+- NeoPixel RGB LED
+- SD card module (for gateway)
 
 ### Installation
 
-1. Get a free API Key at [https://example.com](https://example.com)
-2. Clone the repo
+1. **Clone the repository**
    ```sh
-   git clone https://github.com/github_username/repo_name.git
+   git clone https://github.com/your-username/MyFreeRTOSProject.git
+   cd MyFreeRTOSProject
    ```
-3. Install NPM packages
+
+2. **Install Arduino libraries** via Arduino IDE Library Manager:
+   - LoRa (Arduino)
+   - Adafruit GFX Library
+   - Adafruit SSD1306
+   - Adafruit NeoPixel
+   - Adafruit INA219
+   - ArduinoJson (v7.4.3+)
+   - OneWire
+   - DallasTemperature
+
+3. **Configure your deployment**
    ```sh
-   npm install
+   # IoT_Node/config.h
+   cp IoT_Node/config.h.template IoT_Node/config.h
+   # Edit IoT_Node/config.h with your parameters
+   
+   # Gateway_Node/config.h
+   cp Gateway_Node/config.h.template Gateway_Node/config.h
+   # Edit Gateway_Node/config.h with your parameters
    ```
-4. Enter your API in `config.js`
-   ```js
-   const API_KEY = 'ENTER YOUR API';
+
+4. **Generate security keys** (IMPORTANT!)
+   ```bash
+   # Generate AES encryption key
+   openssl rand -hex 16
+   
+   # Generate HMAC authentication key
+   openssl rand -hex 16
    ```
-5. Change git remote url to avoid accidental pushes to base project
-   ```sh
-   git remote set-url origin github_username/repo_name
-   git remote -v # confirm the changes
-   ```
+   
+   Update both `config.h` files with identical keys.
+
+5. **Upload firmware**
+   - Open `IoT_Node/IoT_Node.ino` in Arduino IDE
+   - Select board: ESP32-S3 (or your board)
+   - Upload to first ESP32 board
+   - Repeat for `Gateway_Node/Gateway_Node.ino` using ESP32 DevKit
+
+6. **Verify communication**
+   - Open Serial Monitor at 115200 baud
+   - Should see periodic sensor readings and transmissions
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-
-
-<!-- USAGE EXAMPLES -->
 ## Usage
 
-Use this space to show useful examples of how a project can be used. Additional screenshots, code examples and demos work well in this space. You may also link to more resources.
+### IoT Measurement Node
 
-_For more examples, please refer to the [Documentation](https://example.com)_
+Automatically:
+- Reads sensors every 60 seconds
+- Sends data via encrypted LoRa to gateway
+- Displays readings on OLED screen
+- Triggers alerts on shake detection
+- Monitors battery status
+
+Serial output shows:
+```
+[SENSORS TASK] Attempting to acquire gDataMutex... SUCCESS
+[SENSORS TASK] Reading sensors...
+[SEND_JSON] JSON delivery successful
+[SEC ACK] seq=2
+```
+
+### Gateway Node
+
+Automatically:
+- Receives encrypted messages from IoT node
+- Sends ACK confirmation
+- Logs data to SD card
+- Displays readings on serial output
+- Plays audio alerts on threshold violations
+
+Serial output shows:
+```
+========= NOUVELLES DONNEES EAU (SECURE) =========
+SEQ         : 2
+BATTERIE    : 75% | 4.15 V | 125 mA
+pH          : 6.93 | Score: 10/10
+TDS         : 450 ppm | Score: 8/10
+TURBIDITE   : 2.41 V | Score: 4/10
+TEMP. EAU   : 17.5 °C
+TEMP. CARTE : MPU 37.8 °C
+TEMP. ESP32 : S3 38.2 °C
+EVENT       : None
+==================================================
+```
+
+### Configuration
+
+All settings are in `config.h` files:
+
+**Critical (must match between nodes):**
+- `DEVICE_ID`: Node identification
+- `ENC_KEY`: AES encryption key (16 bytes)
+- `HMAC_KEY`: HMAC authentication key (16 bytes)
+- LoRa parameters: frequency, spreading factor, bandwidth, coding rate
+
+**Optional:**
+- Sensor thresholds (Gateway only)
+- Timing parameters
+- GPIO pins (hardware-specific)
+
+See `IoT_Node/config.h` and `Gateway_Node/config.h` for complete reference.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+## System Architecture
 
+```
+┌─────────────────────────────────────────────────────────┐
+│                   IoT Measurement Node                   │
+│                    (ESP32-S3 + LoRa)                    │
+├─────────────────────────────────────────────────────────┤
+│ • Water Quality Sensors (pH, TDS, Turbidity)            │
+│ • Temperature Sensors (Water + MPU6050)                 │
+│ • Battery Monitor (INA219)                              │
+│ • Accelerometer (MPU6050 - Shake Detection)             │
+│ • OLED Display                                           │
+│ • RGB LED Status Indicator                              │
+└────────────┬────────────────────────────────────────────┘
+             │
+             │  Encrypted LoRa
+             │  AES-128 + HMAC-256
+             │
+┌────────────▼────────────────────────────────────────────┐
+│                    Gateway Node                          │
+│                 (ESP32 DevKit + LoRa)                   │
+├─────────────────────────────────────────────────────────┤
+│ • LoRa Receiver                                          │
+│ • Message Decryption & Verification                     │
+│ • SD Card Data Logger                                   │
+│ • Audio Alert System                                    │
+│ • Serial Monitor Display                                │
+└─────────────────────────────────────────────────────────┘
+```
 
-<!-- ROADMAP -->
+## JSON Payload Format
+
+Optimized for LoRa transmission (<180 bytes):
+
+```json
+{
+  "b": 75,          // Battery percentage
+  "v": 4.15,        // Battery voltage
+  "m": 125,         // Battery current (mA)
+  "p": 6.93,        // pH value
+  "ps": 10,         // pH score (0-10)
+  "t": 450,         // TDS ppm
+  "ts": 8,          // TDS score (0-10)
+  "u": 2.41,        // Turbidity voltage
+  "us": 4,          // Turbidity score (0-10)
+  "tw": 17.5,       // Water temperature
+  "tm": 37.8,       // MPU temperature
+  "te": 38.2,       // ESP32 temperature
+  "e": "None"       // Event type
+}
+```
+
+## Security
+
+### Encryption & Authentication
+- **Algorithm**: AES-128 (ECB mode) + HMAC-256
+- **Key Management**: Centralized in config.h
+- **Initialization Vector**: Random 8-byte IV per message
+- **Authentication**: 8-byte HMAC truncated
+
+### Best Practices
+1. Generate new keys for each deployment
+2. Add `config.h` to `.gitignore` to prevent accidental commits
+3. Store keys securely (password manager, HSM, etc.)
+4. Rotate keys periodically
+5. Verify board firmware integrity before deployment
+
+### .gitignore Configuration
+```
+# Security - Never commit configuration files
+*/config.h
+.vscode/
+*.pem
+*.key
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Troubleshooting
+
+### Gateway doesn't receive data
+- Verify `DEVICE_ID` matches between both nodes
+- Check `ENC_KEY` and `HMAC_KEY` are identical
+- Confirm LoRa frequency matches
+- Check antenna connections and positioning
+- Look for `[SEC] invalid plaintext length` errors (payload too large)
+
+### Communication range too short
+- Increase Spreading Factor: `LORA_SF = 10` or `12`
+- Reduce Bandwidth: `LORA_BW = 62.5E3`
+- Check antenna positioning (vertical orientation optimal)
+- Remove obstacles between nodes
+
+### Periodic sensor measurements not transmitting
+- Check JSON payload size (<180 bytes)
+- Verify mutex isn't timing out (check logs)
+- Ensure sensor reads complete within timeout period
+- Check LoRa radio is in RX mode after transmissions
+
+### Serial output shows garbled text
+- Verify baud rate: 115200
+- Check USB cable connection
+- Try different USB port
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Project Structure
+
+```
+MyFreeRTOSProject/
+├── IoT_Node/
+│   ├── IoT_Node.ino          # Main entry point
+│   ├── config.h              # Configuration (ignored by git)
+│   ├── app_state.h           # Global state definitions
+│   ├── app_state.cpp         # Initialization & helpers
+│   ├── lora_radio.h          # LoRa communication
+│   ├── lora_radio.cpp        # LoRa implementation
+│   ├── task_sensors.h        # Sensor reading task
+│   ├── task_sensors.cpp      # Sensor implementation
+│   ├── task_mpu.h            # Accelerometer task
+│   ├── task_mpu.cpp          # MPU6050 implementation
+│   ├── task_display.h        # Display task
+│   ├── task_display.cpp      # OLED implementation
+│   ├── display_oled.h        # Display utilities
+│   └── display_oled.cpp      # Display functions
+│
+├── Gateway_Node/
+│   ├── Gateway_Node.ino      # Main entry point
+│   ├── config.h              # Configuration (ignored by git)
+│   └── (compiled from main)
+│
+├── .gitignore                # Git ignore rules
+├── README.md                 # This file
+└── LICENSE                   # Project license
+```
+
+## FreeRTOS Task Structure
+
+| Task | Priority | Period | Purpose |
+|------|----------|--------|---------|
+| SensorsTask | 2 | 60s | Read water sensors, transmit data |
+| MPUTask | 3 | 50ms | Read accelerometer, detect shakes |
+| DisplayTask | 1 | 100ms | Update OLED display |
+| Core0 | - | - | System tasks |
+| Core1 | - | - | User tasks |
+
+## Performance Metrics
+
+- **Sensor Read Time**: ~4.2 seconds
+- **JSON Serialization**: <1ms
+- **LoRa Transmission**: 1-2 seconds (SF=7)
+- **ACK Wait Time**: 800ms
+- **Periodic Interval**: 60 seconds
+- **Payload Size**: ~135 bytes (88% efficient)
+
 ## Roadmap
 
-- [ ] Feature 1
-- [ ] Feature 2
-- [ ] Feature 3
-    - [ ] Nested Feature
+- [x] Water quality sensor integration
+- [x] LoRa encrypted communication
+- [x] FreeRTOS task management
+- [x] Battery monitoring
+- [x] Shake event detection
+- [x] Real-time display
+- [ ] Mobile app integration
+- [ ] Cloud data synchronization
+- [ ] Web dashboard
+- [ ] Multi-node support
+- [ ] OTA firmware updates
 
-See the [open issues](https://github.com/github_username/repo_name/issues) for a full list of proposed features (and known issues).
+See the [open issues](https://github.com/your-username/MyFreeRTOSProject/issues) for a full list of proposed features and known issues.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-
-
-<!-- CONTRIBUTING -->
 ## Contributing
 
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
+Contributions are what make the open source community such an amazing place. Any contributions you make are **greatly appreciated**.
 
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
@@ -186,74 +341,38 @@ Don't forget to give the project a star! Thanks again!
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### Top contributors:
-
-<a href="https://github.com/github_username/repo_name/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=github_username/repo_name" alt="contrib.rocks image" />
-</a>
-
-
-
-<!-- LICENSE -->
 ## License
 
-Distributed under the project_license. See `LICENSE.txt` for more information.
+Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-
-
-<!-- CONTACT -->
 ## Contact
 
-Your Name - [@twitter_handle](https://twitter.com/twitter_handle) - email@email_client.com
+Project Maintainer - [@yourtwitter](https://twitter.com/yourtwitter) - your.email@example.com
 
-Project Link: [https://github.com/github_username/repo_name](https://github.com/github_username/repo_name)
+Project Repository: [https://github.com/your-username/MyFreeRTOSProject](https://github.com/your-username/MyFreeRTOSProject)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-
-
-<!-- ACKNOWLEDGMENTS -->
 ## Acknowledgments
 
-* []()
-* []()
-* []()
+* Arduino community for excellent IoT libraries
+* LoRa-Alliance for long-range communication specs
+* FreeRTOS for real-time operating system
+* Adafruit for sensor libraries and drivers
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+---
 
-
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[contributors-shield]: https://img.shields.io/github/contributors/github_username/repo_name.svg?style=for-the-badge
-[contributors-url]: https://github.com/github_username/repo_name/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/github_username/repo_name.svg?style=for-the-badge
-[forks-url]: https://github.com/github_username/repo_name/network/members
-[stars-shield]: https://img.shields.io/github/stars/github_username/repo_name.svg?style=for-the-badge
-[stars-url]: https://github.com/github_username/repo_name/stargazers
-[issues-shield]: https://img.shields.io/github/issues/github_username/repo_name.svg?style=for-the-badge
-[issues-url]: https://github.com/github_username/repo_name/issues
-[license-shield]: https://img.shields.io/github/license/github_username/repo_name.svg?style=for-the-badge
-[license-url]: https://github.com/github_username/repo_name/blob/master/LICENSE.txt
-[linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
-[linkedin-url]: https://linkedin.com/in/linkedin_username
-[product-screenshot]: images/screenshot.png
-<!-- Shields.io badges. You can a comprehensive list with many more badges at: https://github.com/inttter/md-badges -->
-[Next.js]: https://img.shields.io/badge/next.js-000000?style=for-the-badge&logo=nextdotjs&logoColor=white
-[Next-url]: https://nextjs.org/
-[React.js]: https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB
-[React-url]: https://reactjs.org/
-[Vue.js]: https://img.shields.io/badge/Vue.js-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D
-[Vue-url]: https://vuejs.org/
-[Angular.io]: https://img.shields.io/badge/Angular-DD0031?style=for-the-badge&logo=angular&logoColor=white
-[Angular-url]: https://angular.io/
-[Svelte.dev]: https://img.shields.io/badge/Svelte-4A4A55?style=for-the-badge&logo=svelte&logoColor=FF3E00
-[Svelte-url]: https://svelte.dev/
-[Laravel.com]: https://img.shields.io/badge/Laravel-FF2D20?style=for-the-badge&logo=laravel&logoColor=white
-[Laravel-url]: https://laravel.com
-[Bootstrap.com]: https://img.shields.io/badge/Bootstrap-563D7C?style=for-the-badge&logo=bootstrap&logoColor=white
-[Bootstrap-url]: https://getbootstrap.com
-[JQuery.com]: https://img.shields.io/badge/jQuery-0769AD?style=for-the-badge&logo=jquery&logoColor=white
-[JQuery-url]: https://jquery.com 
+[Arduino.cc]: https://img.shields.io/badge/Arduino-00979D?style=for-the-badge&logo=Arduino&logoColor=white
+[Arduino-url]: https://www.arduino.cc
+[ESP32]: https://img.shields.io/badge/ESP32-E7352C?style=for-the-badge&logo=espressif&logoColor=white
+[ESP32-url]: https://www.espressif.com
+[FreeRTOS]: https://img.shields.io/badge/FreeRTOS-3498DB?style=for-the-badge
+[FreeRTOS-url]: https://www.freertos.org
+[LoRa]: https://img.shields.io/badge/LoRa-1F77B9?style=for-the-badge
+[LoRa-url]: https://lora-alliance.org
+[ArduinoJson]: https://img.shields.io/badge/ArduinoJson-5C6AC4?style=for-the-badge
+[ArduinoJson-url]: https://arduinojson.org

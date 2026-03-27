@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include "config.h"
 #include <Wire.h>
 #include <SPI.h>
 #include <LoRa.h>
@@ -28,73 +29,18 @@ extern Adafruit_INA219 ina219;
 extern bool inaOk;
 
 // ================= DS18B20 =================
-#define ONE_WIRE_BUS 21
 extern OneWire oneWire;
 extern DallasTemperature sensors;
 
 // ================= MPU6050 =================
-#define MPU_ADDR 0x68
-#define REG_PWR_MGMT_1   0x6B
-#define REG_ACCEL_CONFIG 0x1C
-#define REG_ACCEL_XOUT_H 0x3B
-#define REG_TEMP_OUT_H   0x41
-
-extern const uint8_t ACCEL_RANGE;
 extern bool mpuOk;
 
 // ================= RGB =================
-#define RGB_PIN 48
-#define RGB_COUNT 1
 extern Adafruit_NeoPixel pixel;
 extern bool rgbActive;
 extern uint32_t rgbOffAt;
 
-// ================= LoRa =================
-extern const int LORA_RST;
-extern const int LORA_DIO0;
-extern const int LORA_NSS;
-extern const int LORA_MOSI;
-extern const int LORA_MISO;
-extern const int LORA_SCK;
-extern const int LORA_DIO1;
-extern const int LORA_DIO2;
-
-extern const long LORA_FREQ;
-extern const int  LORA_SF;
-extern const long LORA_BW;
-extern const int  LORA_CR;
-extern const uint8_t LORA_SYNC_WORD;
-
-// ================= Battery =================
-extern const float BATT_EMPTY_V;
-extern const float BATT_FULL_V;
-
-// ================= Capteurs eau =================
-#define SENSOR_POWER_PIN 40
-#define TURB_ADC_PIN 6
-#define TDS_ADC_PIN 2
-#define PH_ADC_PIN 17
-
-extern const uint32_t SENSOR_WARMUP_MS;
-extern const uint32_t SENSOR_RC_SETTLE_MS;
-extern const float TURB_DIVIDER_RTOP;
-extern const float TURB_DIVIDER_RBOT;
-
-// ================= Shake =================
-extern const float SHAKE_THRESHOLD_G;
-extern const uint32_t SHAKE_COOLDOWN_MS;
-
-// ================= Timing =================
-extern const uint32_t OLED_UPDATE_MS;
-extern const uint32_t AUTO_READ_INTERVAL_MS;
-
 // ================= Security / protocol =================
-extern const uint8_t  PROTO_VERSION;
-extern const uint32_t DEVICE_ID;
-extern const uint8_t  ENC_KEY[16];
-extern const uint8_t  HMAC_KEY[16];
-extern const uint8_t  ACK_RETRY_MAX;
-extern const uint32_t ACK_TIMEOUT_MS;
 extern uint32_t gTxSeq;
 
 // ================= Shared data =================
