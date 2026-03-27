@@ -23,17 +23,13 @@ static const uint32_t DEVICE_ID = 0x12345678;  // EDIT: Your device ID
 static const uint8_t PROTO_VERSION = 1;
 
 // ============================================================
-// SECURITY KEYS (AES-128 Encryption) - EDIT THESE!
+// SECURITY KEYS (AES-128-GCM Authenticated Encryption) - EDIT THESE!
 // ============================================================
+// GCM provides both encryption and authentication in one operation
 // Generate with: openssl rand -hex 16
 static const uint8_t ENC_KEY[16] = {
   0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
   0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99
-};
-
-static const uint8_t HMAC_KEY[16] = {
-  0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
-  0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA
 };
 
 // ============================================================

@@ -2,17 +2,17 @@
 #include "app_state.h"
 
 #include "mbedtls/aes.h"
-#include "mbedtls/md.h"
+#include "mbedtls/gcm.h"
 
 static const uint8_t MSG_TYPE_DATA = 0x01;
 static const uint8_t MSG_TYPE_ACK  = 0x02;
 
-static const size_t IV_LEN         = 8;
-static const size_t HMAC_TRUNC_LEN = 8;
+static const size_t GCM_NONCE_LEN  = 12;  // GCM nonce (IV) - 96-bit is standard
+static const size_t GCM_TAG_LEN    = 16;  // GCM authentication tag - full 128-bit
 static const size_t CRC_LEN        = 2;
-static const size_t HEADER_LEN     = 1 + 1 + 4 + 4 + 8 + 2; // ver,type,device,seq,iv,payload_len
+static const size_t HEADER_LEN     = 1 + 1 + 4 + 4 + GCM_NONCE_LEN + 2; // ver,type,device,seq,nonce,payload_len
 static const size_t MAX_PLAIN_LEN  = 180;
-static const size_t MAX_FRAME_LEN  = HEADER_LEN + MAX_PLAIN_LEN + HMAC_TRUNC_LEN + CRC_LEN;
+static const size_t MAX_FRAME_LEN  = HEADER_LEN + MAX_PLAIN_LEN + GCM_TAG_LEN + CRC_LEN;
 
 static void writeU16BE(uint8_t *dst, uint16_t v) {
   dst[0] = (uint8_t)((v >> 8) & 0xFF);
@@ -49,56 +49,78 @@ static uint16_t crc16Ccitt(const uint8_t *data, size_t len) {
   return crc;
 }
 
-static void buildIv(uint32_t seq, uint8_t iv[IV_LEN]) {
-  writeU32BE(&iv[0], DEVICE_ID);
-  writeU32BE(&iv[4], seq);
+static void buildNonce(uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]) {
+  // Nonce: [DEVICE_ID (4B)] [Sequence (4B)] [Random (4B)]
+  writeU32BE(&nonce[0], DEVICE_ID);
+  writeU32BE(&nonce[4], seq);
+  // Last 4 bytes: random counter for uniqueness
+  nonce[8]  = random(0, 256);
+  nonce[9]  = random(0, 256);
+  nonce[10] = random(0, 256);
+  nonce[11] = random(0, 256);
 }
 
-static bool aesCtrCrypt(const uint8_t *input, size_t len, const uint8_t iv[IV_LEN], uint8_t *output) {
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
+static bool aesgcmEncrypt(
+  const uint8_t *plain,
+  size_t plainLen,
+  const uint8_t nonce[GCM_NONCE_LEN],
+  const uint8_t *aad,
+  size_t aadLen,
+  uint8_t *cipher,
+  uint8_t tag[GCM_TAG_LEN]
+) {
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
 
-  if (mbedtls_aes_setkey_enc(&aes, ENC_KEY, 128) != 0) {
-    mbedtls_aes_free(&aes);
+  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, ENC_KEY, 128) != 0) {
+    mbedtls_gcm_free(&gcm);
     return false;
   }
 
-  uint8_t nonce_counter[16] = {0};
-  uint8_t stream_block[16] = {0};
-  size_t nc_off = 0;
-
-  memcpy(nonce_counter, iv, IV_LEN);
-
-  int rc = mbedtls_aes_crypt_ctr(
-    &aes,
-    len,
-    &nc_off,
-    nonce_counter,
-    stream_block,
-    input,
-    output
+  int rc = mbedtls_gcm_crypt_and_tag(
+    &gcm,
+    MBEDTLS_GCM_ENCRYPT,
+    plainLen,
+    nonce, GCM_NONCE_LEN,
+    aad, aadLen,
+    plain,
+    cipher,
+    GCM_TAG_LEN, tag
   );
 
-  mbedtls_aes_free(&aes);
+  mbedtls_gcm_free(&gcm);
   return rc == 0;
 }
 
-static bool computeHmac8(const uint8_t *data, size_t len, uint8_t out8[HMAC_TRUNC_LEN]) {
-  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  if (!md_info) return false;
+static bool aesgcmDecrypt(
+  const uint8_t *cipher,
+  size_t cipherLen,
+  const uint8_t nonce[GCM_NONCE_LEN],
+  const uint8_t *aad,
+  size_t aadLen,
+  const uint8_t tag[GCM_TAG_LEN],
+  uint8_t *plain
+) {
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
 
-  uint8_t full[32] = {0};
+  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, ENC_KEY, 128) != 0) {
+    mbedtls_gcm_free(&gcm);
+    return false;
+  }
 
-  int rc = mbedtls_md_hmac(
-    md_info,
-    HMAC_KEY, sizeof(HMAC_KEY),
-    data, len,
-    full
+  int rc = mbedtls_gcm_auth_decrypt(
+    &gcm,
+    cipherLen,
+    nonce, GCM_NONCE_LEN,
+    aad, aadLen,
+    tag, GCM_TAG_LEN,
+    cipher,
+    plain
   );
-  if (rc != 0) return false;
 
-  memcpy(out8, full, HMAC_TRUNC_LEN);
-  return true;
+  mbedtls_gcm_free(&gcm);
+  return rc == 0;
 }
 
 static bool loraSendRaw(const uint8_t *data, size_t len) {
@@ -145,27 +167,40 @@ static bool buildSecureFrame(
 ) {
   if (plainLen > MAX_PLAIN_LEN) return false;
 
-  uint8_t iv[IV_LEN];
-  buildIv(seq, iv);
+  uint8_t nonce[GCM_NONCE_LEN];
+  buildNonce(seq, nonce);
 
+  // Build header (unencrypted, authenticated as AAD)
   size_t pos = 0;
   outFrame[pos++] = PROTO_VERSION;
   outFrame[pos++] = msgType;
   writeU32BE(&outFrame[pos], DEVICE_ID); pos += 4;
   writeU32BE(&outFrame[pos], seq);       pos += 4;
-  memcpy(&outFrame[pos], iv, IV_LEN);    pos += IV_LEN;
+  memcpy(&outFrame[pos], nonce, GCM_NONCE_LEN); pos += GCM_NONCE_LEN;
   writeU16BE(&outFrame[pos], plainLen);  pos += 2;
 
+  // Encrypt payload using GCM with header as Additional Authenticated Data (AAD)
+  uint8_t *ciphertext = &outFrame[pos];
+  uint8_t tag[GCM_TAG_LEN];
+
   if (plainLen > 0) {
-    if (!aesCtrCrypt(plain, plainLen, iv, &outFrame[pos])) return false;
-    pos += plainLen;
+    if (!aesgcmEncrypt(plain, plainLen, nonce, outFrame, pos, ciphertext, tag)) {
+      return false;
+    }
+  } else {
+    // For empty payload, still generate tag
+    if (!aesgcmEncrypt(nullptr, 0, nonce, outFrame, pos, nullptr, tag)) {
+      return false;
+    }
   }
 
-  uint8_t tag[HMAC_TRUNC_LEN];
-  if (!computeHmac8(outFrame, pos, tag)) return false;
-  memcpy(&outFrame[pos], tag, HMAC_TRUNC_LEN);
-  pos += HMAC_TRUNC_LEN;
+  pos += plainLen;
 
+  // Append authentication tag
+  memcpy(&outFrame[pos], tag, GCM_TAG_LEN);
+  pos += GCM_TAG_LEN;
+
+  // Append CRC-16 for physical layer error detection
   uint16_t crc = crc16Ccitt(outFrame, pos);
   writeU16BE(&outFrame[pos], crc);
   pos += 2;
@@ -178,31 +213,76 @@ static bool verifySecureFrame(
   const uint8_t *frame,
   size_t frameLen,
   uint8_t expectedType,
-  uint32_t expectedSeq
+  uint32_t expectedSeq,
+  uint8_t *outPlain,
+  size_t &outPlainLen
 ) {
-  if (frameLen < HEADER_LEN + HMAC_TRUNC_LEN + CRC_LEN) return false;
+  if (frameLen < HEADER_LEN + GCM_TAG_LEN + CRC_LEN) {
+    Serial.print("[GCM] Frame too short: ");
+    Serial.println(frameLen);
+    return false;
+  }
 
+  // Verify CRC-16
   uint16_t rxCrc = readU16BE(&frame[frameLen - 2]);
   uint16_t calcCrc = crc16Ccitt(frame, frameLen - 2);
-  if (rxCrc != calcCrc) return false;
+  if (rxCrc != calcCrc) {
+    Serial.println("[GCM] CRC mismatch");
+    return false;
+  }
 
-  if (frame[0] != PROTO_VERSION) return false;
-  if (frame[1] != expectedType)  return false;
+  // Verify header fields
+  if (frame[0] != PROTO_VERSION) {
+    Serial.println("[GCM] Version mismatch");
+    return false;
+  }
+  if (frame[1] != expectedType) {
+    Serial.println("[GCM] Type mismatch");
+    return false;
+  }
 
   uint32_t devId = readU32BE(&frame[2]);
   uint32_t seq   = readU32BE(&frame[6]);
 
-  if (devId != DEVICE_ID) return false;
-  if (seq != expectedSeq) return false;
+  if (devId != DEVICE_ID) {
+    Serial.print("[GCM] Device ID mismatch: got 0x");
+    Serial.print(devId, HEX);
+    Serial.print(" expected 0x");
+    Serial.println(DEVICE_ID, HEX);
+    return false;
+  }
+  if (seq != expectedSeq) {
+    Serial.print("[GCM] Sequence mismatch: got ");
+    Serial.print(seq);
+    Serial.print(" expected ");
+    Serial.println(expectedSeq);
+    return false;
+  }
 
-  size_t signedLen = frameLen - 2 - HMAC_TRUNC_LEN;
-  const uint8_t *rxTag = &frame[signedLen];
+  // Extract nonce and ciphertext info
+  const uint8_t *nonce = &frame[10];
+  uint16_t cipherLen = readU16BE(&frame[10 + GCM_NONCE_LEN]);
 
-  uint8_t calcTag[HMAC_TRUNC_LEN];
-  if (!computeHmac8(frame, signedLen, calcTag)) return false;
+  // Extract tag and ciphertext
+  size_t cipherPos = HEADER_LEN;
+  size_t tagPos = cipherPos + cipherLen;
+  size_t crcPos = tagPos + GCM_TAG_LEN;
 
-  if (memcmp(rxTag, calcTag, HMAC_TRUNC_LEN) != 0) return false;
+  if (crcPos + 2 != frameLen) {
+    Serial.println("[GCM] Frame structure mismatch");
+    return false;
+  }
 
+  const uint8_t *cipher = &frame[cipherPos];
+  const uint8_t *tag = &frame[tagPos];
+
+  // Decrypt and verify authentication tag
+  if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN - 2, tag, outPlain)) {
+    Serial.println("[GCM] Authentication failed - corrupted or invalid packet");
+    return false;
+  }
+
+  outPlainLen = cipherLen;
   return true;
 }
 
@@ -211,17 +291,19 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs) {
   size_t len = 0;
 
   if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
-    Serial.print("[SEC WAIT ACK] timeout seq=");
+    Serial.print("[GCM WAIT ACK] timeout seq=");
     Serial.println(seq);
     return false;
   }
 
-  Serial.print("[SEC WAIT ACK] got packet len=");
+  Serial.print("[GCM WAIT ACK] got packet len=");
   Serial.print((int)len);
   Serial.print(" seq=");
   Serial.println(seq);
 
-  return verifySecureFrame(buf, len, MSG_TYPE_ACK, seq);
+  uint8_t plain[32];
+  size_t plainLen = 0;
+  return verifySecureFrame(buf, len, MSG_TYPE_ACK, seq, plain, plainLen);
 }
 
 bool loraInit() {

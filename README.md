@@ -213,40 +213,126 @@ Single-byte difference in ENC_KEY or HMAC_KEY between nodes causes message authe
 
 ## Security Implementation
 
+### Cryptographic Architecture
+
+**Encryption & Authentication Mode: AES-128-GCM**
+- **Algorithm**: Galois/Counter Mode (GCM) authenticated encryption
+- **Key Size**: 128-bit (16 bytes)
+- **Nonce**: 96-bit (12 bytes) per message
+- **Authentication Tag**: 128-bit (16 bytes) full-strength
+- **Mode**: Provides both confidentiality AND authenticity in single operation
+
+GCM was chosen over older modes (ECB, CBC) because it:
+1. Eliminates need for separate HMAC (combined authenticated encryption)
+2. Provides stronger authentication guarantees
+3. Detects both ciphertext tampering AND message forgery
+4. Better hardware support on embedded processors
+5. Constant-time operations reduce timing attack surface
+
 ### Cryptographic Functions
 
-**AES-128 Encryption**:
+**AES-128-GCM Encryption**:
 ```cpp
-void encryptAes(uint8_t *data, int len, uint8_t *key);
-// ECB mode, PKCS#7 padding, 16-byte block alignment
+bool aesgcmEncrypt(
+  const uint8_t *plaintext,     // Input message
+  size_t plainLen,              // Message length
+  const uint8_t nonce[12],      // 96-bit nonce (IV)
+  const uint8_t *aad,           // Additional Authenticated Data (header)
+  size_t aadLen,                // AAD length
+  uint8_t *ciphertext,          // Output encrypted data
+  uint8_t tag[16]               // Output authentication tag
+);
+// Encrypts plaintext and produces authentication tag
+// AAD (header) is authenticated but not encrypted
 ```
 
-**HMAC-256 Computation**:
+**AES-128-GCM Decryption**:
 ```cpp
-void computeHmac(uint8_t *data, int len, uint8_t *key, uint8_t *mac);
-// 8-byte truncated HMAC (from 32-byte SHA256)
+bool aesgcmDecrypt(
+  const uint8_t *ciphertext,    // Encrypted message
+  size_t cipherLen,             // Message length
+  const uint8_t nonce[12],      // Same 96-bit nonce used during encryption
+  const uint8_t *aad,           // Same Additional Authenticated Data (header)
+  size_t aadLen,                // AAD length
+  const uint8_t tag[16],        // Received authentication tag
+  uint8_t *plaintext            // Output decrypted data
+);
+// Decrypts ciphertext and verifies authentication tag
+// Returns false if tag verification fails
 ```
 
-**CRC-16**:
+**CRC-16 (Physical Layer)**:
 ```cpp
 uint16_t crc16Ccitt(uint8_t *data, int len);
-// Detects random transmission errors before decryption
+// Detects random transmission errors at PHY layer (independent of crypto)
 ```
 
-### Security Assumptions & Threats
+### Frame Structure (GCM Protocol)
+
+```
+[Nonce (12B)] [Ciphertext] [Auth Tag (16B)] [CRC (2B)]
+     ↓             ↓              ↓             ↓
+   IV-based    [Plaintext]   Verify Frame   Error Detection
+   Counter     + Optional AAD  Integrity
+```
+
+**Encryption Process**:
+1. Generate 96-bit nonce (Device ID + Sequence + Random)
+2. Encrypt plaintext with AES-128-GCM using nonce
+3. Compute 128-bit authentication tag over ciphertext + header
+4. Append tag to frame
+5. Compute CRC-16 over entire encrypted frame
+6. Transmit: [Header+Nonce] [Ciphertext] [Tag] [CRC]
+
+**Decryption Process**:
+1. Verify CRC-16 (detect PHY errors)
+2. Extract nonce, ciphertext, and tag
+3. Decrypt with AES-128-GCM
+4. Verify authentication tag automatically
+5. Return plaintext if tag verification passes
+6. Return error if tag verification fails
+
+### Key Synchronization Requirement
+
+Single-byte difference in ENC_KEY between nodes causes ALL messages to fail authentication. Both nodes must use IDENTICAL keys:
+```cpp
+// Both IoT_Node and Gateway_Node config.h MUST have:
+static const uint8_t ENC_KEY[16] = {
+  0xAA, 0xBB, ... // SAME VALUES
+};
+```
+
+### Security Properties
+
+**GCM Provides**:
+- ✅ **Confidentiality**: Ciphertext reveals nothing about plaintext (IND-CPA security)
+- ✅ **Authenticity**: Detects any bit-level tampering (INT-CTXT security)
+- ✅ **Integrity**: Combined encryption-authentication prevents forgery
+- ✅ **Replay Detection**: Sequence numbers + device ID prevent replayed packets
+- ✅ **Uniqueness**: Random nonce component prevents message pattern recognition
+
+**Additional Protections**:
+- ✅ **Device Identification**: Device ID embedded in frame (prevents spoofing)
+- ✅ **Sequence Tracking**: Sequence numbers prevent replay attacks
+- ✅ **Physical Layer CRC**: Independent error detection at PHY layer
+- ✅ **Constant-Time Operations**: mbedTLS GCM implementation resists timing attacks
+
+### Threat Model
 
 **Protected Against**:
-- ✅ Eavesdropping (AES-128 encryption)
-- ✅ Message tampering (HMAC-256)
-- ✅ Replay attacks (sequence numbers)
-- ✅ Device spoofing (Device ID + HMAC)
-- ✅ Bit errors (CRC-16, HMAC)
+- ✅ **Passive Eavesdropping**: Ciphertext is encrypted with AES-128
+- ✅ **Message Tampering**: GCM tag detects any bit-level modifications
+- ✅ **Replay Attacks**: Sequence numbers prevent old messages being replayed
+- ✅ **Device Spoofing**: Device ID + sequence + tag prevent impersonation
+- ✅ **Message Forgery**: GCM provides unforgeability (INT-CTXT)
+- ✅ **Bit Corruption**: Both CRC and GCM tag detect errors
 
-**Not Protected Against**:
-- ❌ Key compromise (physical device capture)
-- ❌ Brute-force attacks (AES-128 is strong, but endpoints may be compromised)
-- ❌ Side-channel attacks (timing analysis on decryption)
-- ❌ Gateway compromise (can then decrypt all messages)
+**NOT Protected Against**:
+- ❌ **Key Compromise**: If ENC_KEY is exposed, system is completely compromised
+- ❌ **Endpoint Compromise**: If a device is physically captured and firmware dumped
+- ❌ **Gateway Compromise**: If gateway code is modified, it can decrypt/modify messages
+- ❌ **Brute Force**: AES-128 has 2^128 possible keys (computationally infeasible to brute-force)
+- ❌ **Side-Channel Attacks**: Timing analysis, power analysis, electromagnetic analysis (with sufficient equipment and access)
 
 **Deployment Recommendations**:
 1. Generate unique keys per deployment (use `openssl rand -hex 16`)
