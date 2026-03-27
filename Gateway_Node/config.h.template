@@ -1,0 +1,86 @@
+#pragma once
+
+/**
+ * ============================================================
+ * CONFIGURATION TEMPLATE - LoRa Gateway Node
+ * ============================================================
+ * 
+ * SETUP INSTRUCTIONS:
+ * 1. Copy this file to config.h
+ * 2. COPY EXACT KEYS from IoT_Node/config.h!
+ * 3. Verify all LoRa parameters match IoT_Node
+ * 4. Compile and upload
+ * 
+ * SECURITY: config.h is ignored by git (.gitignore)
+ * Never commit actual config.h file - only use this template!
+ */
+
+// ============================================================
+// DEVICE IDENTIFICATION - MUST MATCH IoT_Node!
+// ============================================================
+static const uint32_t DEVICE_ID = 0xEA500123;
+static const uint8_t PROTO_VERSION = 1;
+
+// ============================================================
+// SECURITY KEYS - MUST MATCH IoT_Node EXACTLY!
+// ============================================================
+// Copy these from IoT_Node/config.h
+static const uint8_t ENC_KEY[16] = {
+  0x11, 0x29, 0x3A, 0x47, 0x58, 0x61, 0x72, 0x8C,
+  0x90, 0xAB, 0xBC, 0xCD, 0xDE, 0xE1, 0xF2, 0x04
+};
+
+static const uint8_t HMAC_KEY[16] = {
+  0x21, 0x39, 0x4A, 0x57, 0x68, 0x71, 0x82, 0x9C,
+  0xA0, 0xBB, 0xCC, 0xDD, 0xEE, 0xF1, 0x02, 0x14
+};
+
+// ============================================================
+// LoRa RADIO CONFIGURATION - MUST MATCH IoT_Node!
+// ============================================================
+static const long LORA_FREQ = 433E6;
+static const int LORA_SF = 7;
+static const long LORA_BW = 125E3;
+static const int LORA_CR = 5;
+static const uint8_t LORA_SYNC_WORD = 0x34;
+
+// LoRa GPIO pins (ESP32 DevKit)
+static const int LORA_NSS  = 5;
+static const int LORA_SCK  = 18;
+static const int LORA_MISO = 19;
+static const int LORA_MOSI = 23;
+static const int LORA_RST  = 32;
+static const int LORA_DIO0 = 33;
+static const int LORA_DIO1 = 17;
+static const int LORA_DIO2 = 16;
+
+// ============================================================
+// GATEWAY FEATURES
+// ============================================================
+static const int SD_CS_PIN = 4;
+static const int AUDIO_PIN = 25;
+static const int MAX_ALERT_QUEUE = 5;
+
+// ============================================================
+// SENSOR ALERT THRESHOLDS (Gateway only)
+// ============================================================
+static const float PH_MIN_SAFE = 6.5f;
+static const float PH_MAX_SAFE = 8.5f;
+static const int TDS_MIN_SAFE = 100;
+static const int TDS_MAX_SAFE = 1000;
+static const int TURBIDITY_MAX_SAFE = 5;
+static const float TEMP_MIN_SAFE = 10.0f;
+static const float TEMP_MAX_SAFE = 35.0f;
+
+// ============================================================
+// COMMUNICATION
+// ============================================================
+static const uint32_t ACK_TIMEOUT_MS = 800;
+static const uint8_t ACK_RETRY_MAX = 3;
+
+// ============================================================
+// DEBUG
+// ============================================================
+#define DEBUG_ENABLED 1
+static const uint32_t SERIAL_BAUD = 115200;
+#define LOG_PACKETS 0
