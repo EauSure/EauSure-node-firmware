@@ -15,10 +15,10 @@ Both nodes communicate via encrypted LoRa (433 MHz) with AES-128-GCM authenticat
 ```
 Measurement Node (ESP32-S3)          Gateway Node (ESP32)
 ├─ Water Quality Sensors             ├─ LoRa Receiver
-├─ MPU6050 Accelerometer            ├─ SD Card Logger
+├─ MPU6050 Accelerometer             ├─ SD Card Logger
 ├─ INA219 Power Monitor              ├─ Audio Alerts
-├─ OLED Display                      └─ Serial Console
-└─ FreeRTOS Task Scheduler
+├─ OLED Display                      ├─ Serial Console
+└─ FreeRTOS Task Scheduler           └─ MQTT API Data Transmit
     ↓ (LoRa Encrypted Link)
     ↓
     Encrypted JSON Payload
@@ -26,13 +26,14 @@ Measurement Node (ESP32-S3)          Gateway Node (ESP32)
 
 ## Data Flow
 
-1. **Measurement Node** reads sensors every 60 seconds
+1. **Measurement Node** reads sensors every configured period of time
 2. Serializes to compact JSON (~135 bytes)
 3. Encrypts with AES-128-GCM and transmits via LoRa
 4. **Gateway Node** receives, decrypts, and validates authentication tag
 5. Parses JSON and displays results on console
 6. Stores data to SD card
 7. Triggers audio alerts for threshold violations
+
 
 ## Encryption Protocol
 
@@ -54,23 +55,23 @@ Measurement Node (ESP32-S3)          Gateway Node (ESP32)
 ```
 
 **Field Reference:**
-| Field | Description | Unit |
-|-------|-------------|------|
-| b | Battery percentage | % |
-| v | Battery voltage | V |
-| m | Battery current | mA |
-| p | pH value | - |
-| ps | pH score | 0-10 |
-| t | TDS concentration | ppm |
-| ts | TDS score | 0-10 |
-| u | Turbidity voltage | V |
-| us | Turbidity score | 0-10 |
-| tw | Water temperature | °C |
-| tm | MPU temperature | °C |
-| te | ESP32 temperature | °C |
-| e | Event type | - |
+| Field | Description                 | Unit |
+|-------|-----------------------------|------|
+| b  | Battery percentage             | % |
+| v  | Battery voltage                | V |
+| m  | Battery current                | mA |
+| p  | pH value                       | - |
+| ps | pH score                       | 0-10 |
+| t  | TDS concentration              | ppm |
+| ts | TDS score                      | 0-10 |
+| u  | Turbidity voltage              | V |
+| us | Turbidity score                | 0-10 |
+| tw | Water temperature              |°C |
+| tm | MPU temperature                |°C |
+| te | ESP32 temperature              |°C |
+| e  | Event type                     | - |
 | ag | Acceleration magnitude (shake) | G |
-| dg | Dynamic acceleration (shake) | G |
+| dg | Dynamic acceleration (shake)   | G |
 
 ## Configuration
 
@@ -128,15 +129,6 @@ EVENT       : None
 ==================================================
 ```
 
-## Performance Metrics
-
-- **Payload size**: ~135 bytes (fits within 180-byte LoRa limit with 45-byte safety margin)
-- **Transmission interval**: 60 seconds (sensor readings)
-- **LoRa spreading factor**: SF7 (~100ms per frame)
-- **ACK round-trip**: <500ms typical
-- **Range**: 10+ km line-of-sight (LoRa capability)
-- **Power consumption**: ~200mA active (measurement node)
-
 ## Development Notes
 
 - FreeRTOS runs sensor reading and LoRa TX/RX as separate tasks
@@ -145,6 +137,3 @@ EVENT       : None
 - GCM authentication tags verify packet integrity and prevent tampering
 - All timestamps UTC-relative (milliseconds since boot)
 
-## License & Attribution
-
-This is a project implementation for water quality monitoring research.

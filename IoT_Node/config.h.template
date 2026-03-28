@@ -64,6 +64,11 @@ static const int SENSOR_POWER_PIN = 40;
 static const int TURB_ADC_PIN = 6;
 static const int TDS_ADC_PIN = 2;
 static const int PH_ADC_PIN = 17;
+static const int ONE_WIRE_BUS = 7;
+
+// pH Sensor Calibration
+static const float PH_VOLTAGE_AT_NEUTRAL = 1.50f;  // Voltage at pH 7.0
+static const float PH_SLOPE = 0.18f;               // Voltage change per pH unit
 
 static const uint32_t SENSOR_WARMUP_MS = 300;
 static const uint32_t SENSOR_RC_SETTLE_MS = 2500;
@@ -76,6 +81,13 @@ static const float TURB_DIVIDER_RBOT = 10000.0f;
 static const float SHAKE_THRESHOLD_G = 1.1f;
 static const uint32_t SHAKE_COOLDOWN_MS = 1500;
 static const uint8_t ACCEL_RANGE = 2;
+
+// MPU6050 I2C Address and Registers
+static const uint8_t MPU_ADDR = 0x68;
+static const uint8_t REG_PWR_MGMT_1 = 0x6B;
+static const uint8_t REG_ACCEL_CONFIG = 0x1C;
+static const uint8_t REG_TEMP_OUT_H = 0x41;
+static const uint8_t REG_ACCEL_XOUT_H = 0x3B;
 
 // ============================================================
 // DISPLAY & TIMING
