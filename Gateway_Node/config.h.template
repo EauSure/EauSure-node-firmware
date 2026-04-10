@@ -75,6 +75,20 @@ static const uint32_t ACK_TIMEOUT_MS = 800;
 static const uint8_t ACK_RETRY_MAX = 3;
 
 // ============================================================
+// WIFI & CLOUD API CONFIGURATION
+// ============================================================
+// Configure your WiFi network credentials and API endpoint
+#define WIFI_SSID "YourWiFiNetwork"
+#define WIFI_PASSWORD "your-wifi-password"
+#define API_URL "https://your-api-domain.vercel.app/api/sensor-data"
+#define API_KEY "your-gateway-api-key-from-vercel"
+
+// Connection settings
+#define WIFI_TIMEOUT_MS 10000
+#define HTTP_TIMEOUT_MS 5000
+#define WIFI_RECONNECT_INTERVAL 30000  // Check connection every 30 seconds
+
+// ============================================================
 // DEBUG
 // ============================================================
 #define DEBUG_ENABLED 1
