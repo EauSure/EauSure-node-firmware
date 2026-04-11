@@ -1,10 +1,24 @@
 #pragma once
-
 #include <Arduino.h>
 
+// =====================================================
+// OTAA Manager
+//
+// Drives the gateway command schedule:
+//   - Boot: sends ACTIVATE, waits for ACTIVATE_OK
+//   - Every 60 s (+ manual 'm' key): sends MEASURE_REQ
+//   - Every 10 s: sends HEARTBEAT_REQ
+//
+// Called from Gateway loop() — not FreeRTOS.
+// =====================================================
 void initOtaaManager();
 void otaaTick();
-bool handleOtaaControlFrame(const uint8_t *frame, size_t frameLen, int rssi, float snr);
 
-void requestNodeActive();
-void requestNodeSleep(uint32_t sleepSeconds);
+// Manual trigger (serial 'm' key)
+void requestMeasureNow();
+
+// =====================================================
+// Incoming frame handlers — called from lora_radio.cpp
+// =====================================================
+void handleActivateOk(const char *json, int rssi, float snr);
+void handleHeartbeatAck(const char *json, int rssi, float snr);

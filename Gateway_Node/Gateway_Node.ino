@@ -1,138 +1,104 @@
 // =====================================================
-// Gateway Node - FreeRTOS Water Quality Monitor
+// Gateway Node — Commander architecture
 // =====================================================
-// Modular architecture for maintainability
-// Receives encrypted LoRa telemetry; SD logging and audio alerts currently disabled
-// Sends data to cloud API via WiFi
+// The gateway is the sole initiator of all IoT node
+// activity except for autonomous SHAKE_ALERT frames.
 //
-// Modules:
-// - app_state: Core state, encryption, protocol helpers
-// - lora_radio: LoRa communication and secure frame handling
-// - sd_logger: SD card initialization and logging
-// - audio_alert: Audio playback and alert management
-// - telemetry: Data parsing, display, and alert triggering
-// - wifi_manager: WiFi connectivity and API communication
-// - otaa_manager: Custom secure OTAA control (pairing, heartbeat, remote state)
+// Boot sequence:
+//   1. LoRa + WiFi init
+//   2. initOtaaManager() — schedules first ACTIVATE
+//   3. otaaTick() sends ACTIVATE; IoT replies ACTIVATE_OK
+//   4. From then: gateway drives MEASURE_REQ (60 s / manual)
+//                 and HEARTBEAT_REQ (10 s)
 // =====================================================
 
 #include <LoRa.h>
 #include "app_state.h"
 #include "lora_radio.h"
-#include "sd_logger.h"
 #include "audio_alert.h"
 #include "telemetry.h"
 #include "wifi_manager.h"
 #include "otaa_manager.h"
 
-// =====================================================
-// Setup
-// =====================================================
 void setup() {
   initApp();
-
-  // Audio alerts temporarily disabled (enable when needed).
-  // if (!initAudio()) {
-  //   Serial.println("[FATAL] Audio init failed");
-  //   while (true) delay(100);
-  // }
 
   if (!initLoRa()) {
     Serial.println("[FATAL] LoRa init failed");
     while (true) delay(100);
   }
 
-  // SD logging temporarily disabled (enable when needed).
-  // if (!initSD()) {
-  //   Serial.println("[FATAL] SD init failed");
-  //   while (true) delay(100);
-  // }
+  // Audio alerts — enable when SD card and WAV files are present
+  // if (!initAudio()) { Serial.println("[FATAL] Audio init failed"); while(true) delay(100); }
 
-  // Initialize WiFi for cloud connectivity
   Serial.println("\n[Gateway] Initializing WiFi...");
   if (WiFiManager::init()) {
-    Serial.println("[Gateway] WiFi connected - Cloud API ready");
+    Serial.println("[Gateway] WiFi connected — Cloud API ready");
   } else {
-    Serial.println("[Gateway] WiFi failed - continuing with LoRa only");
-    Serial.println("[Gateway] Cloud upload disabled; SD logging currently disabled");
+    Serial.println("[Gateway] WiFi failed — continuing without cloud upload");
   }
 
   Serial.println("\n==============================================");
-  Serial.println("Gateway Ready - Waiting for telemetry data...");
+  Serial.println("Gateway Ready — commander mode");
+  Serial.println("  m = manual MEASURE_REQ");
+  Serial.println("  s = stop alarm");
+  Serial.println("  w = WiFi status");
   Serial.println("==============================================\n");
 
   initOtaaManager();
 }
 
-// =====================================================
-// Loop
-// =====================================================
 void loop() {
-  // Check WiFi connection periodically (every 30 seconds)
-  static unsigned long lastWiFiCheck = 0;
-  if (millis() - lastWiFiCheck > WIFI_RECONNECT_INTERVAL) {
-    lastWiFiCheck = millis();
-    
-    if (!WiFiManager::isConnected()) {
-      Serial.println("[Gateway] WiFi disconnected, attempting reconnect...");
-      if (WiFiManager::reconnect()) {
-        Serial.println("[Gateway] WiFi reconnected successfully");
-      } else {
-        Serial.println("[Gateway] WiFi reconnect failed - will retry later");
-      }
-    }
-  }
-  
-  // UART Commands
+  // ── Serial commands ──
   if (Serial.available()) {
     char c = (char)Serial.read();
-    if (c == '\r' || c == '\n') return;
-
-    if (c >= '1' && c <= '9') {
-      loraSendChar(c);
-    } else if (c == 'a') {
-      loraSendString("10");
-    } else if (c == '0') {
-      loraSendString("0");
-    } else if (c == 's') {
-      // stopAlarm(); // Audio alerts disabled
-    } else if (c == 'w') {
-      // WiFi status command
-      Serial.print("[WiFi] Status: ");
-      Serial.println(WiFiManager::getStatusString());
-      if (WiFiManager::isConnected()) {
-        Serial.print("[WiFi] Signal: ");
-        Serial.print(WiFiManager::getSignalStrength());
-        Serial.println(" dBm");
-      }
-    } else if (c == 'x') {
-      Serial.println("[OTAA] Request node ACTIVE");
-      requestNodeActive();
-    } else if (c == 'z') {
-      Serial.println("[OTAA] Request node SLEEP (120s)");
-      requestNodeSleep(120);
+    if (c == '\r' || c == '\n') {}
+    else if (c == 'm') requestMeasureNow();
+    else if (c == 's') stopAlarm();
+    else if (c == 'w') {
+      Serial.printf("[WiFi] %s", WiFiManager::getStatusString());
+      if (WiFiManager::isConnected())
+        Serial.printf(" | %d dBm\n", WiFiManager::getSignalStrength());
+      else
+        Serial.println();
     }
   }
 
+  // ── WiFi watchdog (every 30 s) ──
+  static uint32_t lastWiFiCheck = 0;
+  if (millis() - lastWiFiCheck > WIFI_RECONNECT_INTERVAL) {
+    lastWiFiCheck = millis();
+    if (!WiFiManager::isConnected()) {
+      Serial.println("[Gateway] WiFi dropped — reconnecting...");
+      WiFiManager::reconnect();
+    }
+  }
+
+  // ── OTAA tick — drives ACTIVATE / MEASURE_REQ / HEARTBEAT timers ──
   otaaTick();
 
-  // LoRa RX - binary secure frame
+  // ── LoRa RX — check for incoming IoT frames ──
   int packetSize = LoRa.parsePacket();
   if (!packetSize) return;
 
   uint8_t frame[MAX_FRAME_LEN];
-  size_t len = 0;
+  size_t  len = 0;
+  while (LoRa.available() && len < sizeof(frame)) frame[len++] = (uint8_t)LoRa.read();
 
-  while (LoRa.available() && len < sizeof(frame)) {
-    frame[len++] = (uint8_t)LoRa.read();
-  }
+  int   rssi = LoRa.packetRssi();
+  float snr  = LoRa.packetSnr();
 
-  int rssi = LoRa.packetRssi();
-  float snr = LoRa.packetSnr();
+  if (len < 2) return;
 
-  if (len >= 2 && frame[1] == MSG_TYPE_CTRL) {
-    handleOtaaControlFrame(frame, len, rssi, snr);
+  uint8_t msgType = frame[1];
+
+  if (msgType == MSG_TYPE_DATA) {
+    // MEASURE_RESP or SHAKE_ALERT — heavy handler, ACK sent inside
+    parseAndDispatchDataFrame(frame, len, rssi, snr);
   } else {
-    handleSecurePacket(frame, len, rssi, snr);
+    // ACTIVATE_OK, HEARTBEAT_ACK — lightweight, ACK sent inside
+    parseAndDispatchTypedFrame(frame, len, rssi, snr);
   }
+
   LoRa.receive();
 }

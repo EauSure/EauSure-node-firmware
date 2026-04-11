@@ -1,207 +1,150 @@
 #include "otaa_manager.h"
-
+#include "lora_radio.h"
+#include "app_state.h"
 #include <ArduinoJson.h>
 
-#include "app_state.h"
-#include "lora_radio.h"
-
+// =====================================================
+// Internal state
+// =====================================================
 namespace {
-  bool gNodePaired = false;
-  bool gNodeActive = true;
-  String gNodeMac = "";
+  bool     gNodePaired   = false;
+  bool     gNodeActive   = false;
+  String   gNodeMac      = "";
 
-  uint32_t gLastControlSeq = 0;
-  uint32_t gLastHeartbeatRxAt = 0;
-  uint32_t gLastStatusRxAt = 0;
-  uint32_t gLastPairReqAt = 0;
-  uint32_t gLastHeartbeatReqAt = 0;
-  uint32_t gLastStatusReqAt = 0;
+  uint32_t gLastMeasureAt   = 0;
+  uint32_t gLastHeartbeatAt = 0;
+  uint32_t gLastActivateAt  = 0;
 
-  String getGatewayMacId() {
-    uint64_t chip = ESP.getEfuseMac();
-    char mac[13];
-    snprintf(mac, sizeof(mac), "%04X%08lX", (uint16_t)(chip >> 32), (uint32_t)chip);
-    return String(mac);
-  }
+  bool     gActivatePending = true;   // true until first ACTIVATE_OK received
 
-  bool sendControlDoc(JsonDocument& doc, const char *label) {
-    String out;
-    serializeJson(doc, out);
-
-    bool ok = secureSendControl(out);
-    if (!ok) {
-      Serial.print("[OTAA] Control TX failed: ");
-      Serial.println(label);
-      gNodePaired = false;
-      return false;
-    }
-    return true;
-  }
-
-  void sendPairReq(const char *reason) {
-    JsonDocument doc;
-    doc["cmd"] = "PAIR_REQ";
-    doc["reason"] = reason;
-    doc["gw_mac"] = getGatewayMacId();
-    doc["want"] = gNodeActive ? "active" : "sleep";
-
-    if (sendControlDoc(doc, "PAIR_REQ")) {
-      gLastPairReqAt = millis();
-      Serial.println("[OTAA] PAIR_REQ sent");
-    }
-  }
-
-  void sendHeartbeatReq(const char *reason) {
-    JsonDocument doc;
-    doc["cmd"] = "HEARTBEAT_REQ";
-    doc["reason"] = reason;
-    doc["gw_mac"] = getGatewayMacId();
-    doc["paired"] = gNodePaired;
-
-    if (sendControlDoc(doc, "HEARTBEAT_REQ")) {
-      gLastHeartbeatReqAt = millis();
-      Serial.println("[OTAA] HEARTBEAT_REQ sent");
-    }
-  }
-
-  void sendStatusReq(const char *reason) {
-    JsonDocument doc;
-    doc["cmd"] = "STATUS_REQ";
-    doc["reason"] = reason;
-    doc["gw_mac"] = getGatewayMacId();
-
-    if (sendControlDoc(doc, "STATUS_REQ")) {
-      gLastStatusReqAt = millis();
-      Serial.println("[OTAA] STATUS_REQ sent");
-    }
-  }
+  // How long to wait between ACTIVATE retries at boot (ms)
+  static const uint32_t ACTIVATE_RETRY_MS  = 8000;
+  // Measure interval
+  static const uint32_t MEASURE_INTERVAL_MS   = 60000;
+  // Heartbeat interval
+  static const uint32_t HEARTBEAT_INTERVAL_MS = 15000;
 }
 
+// =====================================================
+// initOtaaManager
+// Called once from setup() after LoRa and WiFi are up.
+// Sends the first ACTIVATE after a short boot delay so
+// the IoT node has time to start its ControlTask.
+// =====================================================
 void initOtaaManager() {
-  gNodePaired = false;
-  gNodeActive = true;
-  gNodeMac = "";
-  gLastControlSeq = 0;
-  gLastHeartbeatRxAt = millis();
-  gLastStatusRxAt = millis();
-  gLastPairReqAt = 0;
-  gLastHeartbeatReqAt = 0;
-  gLastStatusReqAt = 0;
+  gNodePaired      = false;
+  gNodeActive      = false;
+  gNodeMac         = "";
+  gActivatePending = true;
+  gLastMeasureAt   = millis();   // avoid immediate MEASURE_REQ before pairing
+  gLastHeartbeatAt = millis();
+  gLastActivateAt  = 0;          // force first attempt immediately in otaaTick
 
-  sendPairReq("boot");
+  Serial.println("[OTAA] Manager ready — will send ACTIVATE on first tick");
 }
 
-void requestNodeActive() {
-  gNodeActive = true;
-  JsonDocument doc;
-  doc["cmd"] = "SET_ACTIVE";
-  doc["value"] = 1;
-  doc["gw_mac"] = getGatewayMacId();
-  sendControlDoc(doc, "SET_ACTIVE");
-}
-
-void requestNodeSleep(uint32_t sleepSeconds) {
-  gNodeActive = false;
-  JsonDocument doc;
-  doc["cmd"] = "SET_SLEEP";
-  doc["seconds"] = sleepSeconds;
-  doc["gw_mac"] = getGatewayMacId();
-  sendControlDoc(doc, "SET_SLEEP");
-}
-
+// =====================================================
+// otaaTick
+// Called every iteration of loop().
+// Drives the boot handshake and periodic command schedule.
+// =====================================================
 void otaaTick() {
   const uint32_t now = millis();
 
-  if (!gNodePaired) {
-    if (now - gLastPairReqAt >= 15000) {
-      sendPairReq("not_paired");
-    }
-    return;
-  }
-
-  if (gNodeActive) {
-    if (now - gLastHeartbeatReqAt >= 10000) {
-      sendHeartbeatReq("periodic");
-    }
-
-    if (now - gLastHeartbeatRxAt >= 30000) {
-      sendStatusReq("heartbeat_timeout");
-      if (now - gLastPairReqAt >= 5000) {
-        sendPairReq("heartbeat_lost");
+  // ── Phase 1: ACTIVATE handshake ──
+  // Retry every ACTIVATE_RETRY_MS until ACTIVATE_OK received.
+  if (gActivatePending) {
+    if (now - gLastActivateAt >= ACTIVATE_RETRY_MS) {
+      gLastActivateAt = now;
+      Serial.println("[OTAA] Sending ACTIVATE...");
+      if (sendActivate()) {
+        Serial.println("[OTAA] ACTIVATE delivered — waiting for ACTIVATE_OK");
+      } else {
+        Serial.println("[OTAA] ACTIVATE failed — will retry");
       }
     }
+    return;   // don't send MEASURE_REQ or HEARTBEAT until paired
   }
 
-  if (now - gLastStatusReqAt >= 30000) {
-    sendStatusReq("periodic");
+  // ── Phase 2: Periodic HEARTBEAT (every 10 s) ──
+  if (now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+    gLastHeartbeatAt = now;
+    if (!sendHeartbeatReq()) {
+      Serial.println("[OTAA] HEARTBEAT_REQ failed — node may be unreachable");
+    }
+  }
+
+  // ── Phase 3: Periodic MEASURE_REQ (every 60 s) ──
+  if (now - gLastMeasureAt >= MEASURE_INTERVAL_MS) {
+    gLastMeasureAt = now;
+    Serial.println("[OTAA] Auto MEASURE_REQ (60 s interval)");
+    if (!sendMeasureReq()) {
+      Serial.println("[OTAA] MEASURE_REQ failed");
+    }
   }
 }
 
-bool handleOtaaControlFrame(const uint8_t *frame, size_t frameLen, int rssi, float snr) {
-  uint32_t seq = 0;
-  uint8_t plain[MAX_PLAIN_LEN + 1] = {0};
-  uint16_t plainLen = 0;
+// =====================================================
+// requestMeasureNow
+// Called from loop() on serial 'm' key — manual trigger.
+// =====================================================
+void requestMeasureNow() {
+  if (!gNodePaired) {
+    Serial.println("[OTAA] Cannot measure — node not paired yet");
+    return;
+  }
+  Serial.println("[OTAA] Manual MEASURE_REQ triggered");
+  gLastMeasureAt = millis();   // reset auto-timer so we don't double-fire
+  if (!sendMeasureReq()) {
+    Serial.println("[OTAA] Manual MEASURE_REQ failed");
+  }
+}
 
-  if (!parseAndVerifyControlFrame(frame, frameLen, seq, plain, plainLen)) {
-    return false;
+// =====================================================
+// handleActivateOk
+// Called by lora_radio.cpp when an ACTIVATE_OK frame arrives.
+// JSON: {"evt":"ACTIVATE_OK","state":"active","mac":"..."}
+// =====================================================
+void handleActivateOk(const char *json, int rssi, float snr) {
+  StaticJsonDocument<128> doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) {
+    Serial.println("[OTAA] ACTIVATE_OK: JSON parse error");
+    return;
   }
 
-  if (seq < gLastControlSeq) {
-    Serial.print("[OTAA] old control seq rejected: ");
-    Serial.println((unsigned long)seq);
-    return true;
+  String state = doc["state"] | "unknown";
+  String mac   = doc["mac"]   | "";
+
+  gNodePaired      = true;
+  gNodeActive      = (state == "active");
+  gNodeMac         = mac;
+  gActivatePending = false;
+
+  // Kick off timers from now so we don't immediately fire
+  gLastMeasureAt   = millis();
+  gLastHeartbeatAt = millis();
+
+  Serial.printf("[OTAA] ACTIVATE_OK — node paired! mac=%s state=%s RSSI=%d SNR=%.1f\n",
+                mac.c_str(), state.c_str(), rssi, snr);
+  Serial.println("[OTAA] Gateway is now commanding — MEASURE_REQ in 60 s");
+}
+
+// =====================================================
+// handleHeartbeatAck
+// Called by lora_radio.cpp when a HEARTBEAT_ACK frame arrives.
+// JSON: {"evt":"HB_ACK","batt":<pct>,"state":"active"|"sleep"}
+// =====================================================
+void handleHeartbeatAck(const char *json, int rssi, float snr) {
+  StaticJsonDocument<64> doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) {
+    Serial.println("[OTAA] HB_ACK: JSON parse error");
+    return;
   }
 
-  if (seq == gLastControlSeq) {
-    sendSecureAck(seq);
-    return true;
-  }
+  int    batt  = doc["batt"]  | -1;
+  String state = doc["state"] | "unknown";
+  gNodeActive  = (state == "active");
 
-  gLastControlSeq = seq;
-  sendSecureAck(seq);
-
-  plain[plainLen] = '\0';
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, (const char*)plain);
-  if (err) {
-    Serial.print("[OTAA] JSON parse error: ");
-    Serial.println(err.c_str());
-    return true;
-  }
-
-  String evt = doc["evt"] | "";
-  String state = doc["state"] | "";
-  String mac = doc["mac"] | "";
-
-  if (evt == "PAIR_OK") {
-    gNodePaired = true;
-    gNodeMac = mac;
-    gNodeActive = (state != "sleep");
-    gLastStatusRxAt = millis();
-    gLastHeartbeatRxAt = millis();
-    Serial.printf("[OTAA] PAIR_OK mac=%s state=%s RSSI=%d SNR=%.1f\n", gNodeMac.c_str(), state.c_str(), rssi, snr);
-    return true;
-  }
-
-  if (evt == "HEARTBEAT") {
-    gNodePaired = true;
-    gLastHeartbeatRxAt = millis();
-    if (state.length() > 0) gNodeActive = (state != "sleep");
-    Serial.printf("[OTAA] HEARTBEAT state=%s RSSI=%d SNR=%.1f\n", state.c_str(), rssi, snr);
-    return true;
-  }
-
-  if (evt == "STATUS") {
-    gNodePaired = true;
-    gLastStatusRxAt = millis();
-    gLastHeartbeatRxAt = millis();
-    if (state.length() > 0) gNodeActive = (state != "sleep");
-    if (mac.length() > 0) gNodeMac = mac;
-    Serial.printf("[OTAA] STATUS state=%s mac=%s RSSI=%d SNR=%.1f\n", state.c_str(), gNodeMac.c_str(), rssi, snr);
-    return true;
-  }
-
-  Serial.print("[OTAA] Unknown control event: ");
-  Serial.println(evt);
-  return true;
+  Serial.printf("[OTAA] HEARTBEAT_ACK — batt=%d%% state=%s RSSI=%d SNR=%.1f\n",
+                batt, state.c_str(), rssi, snr);
 }

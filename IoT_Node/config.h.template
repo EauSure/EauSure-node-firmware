@@ -52,7 +52,7 @@ static const int LORA_DIO1 = 4;
 static const int LORA_DIO2 = 16;
 
 static const uint8_t ACK_RETRY_MAX = 3;
-static const uint32_t ACK_TIMEOUT_MS = 800;
+static const uint32_t ACK_TIMEOUT_MS = 1500;
 
 // ============================================================
 // SENSOR CONFIGURATION

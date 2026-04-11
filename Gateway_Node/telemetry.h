@@ -7,11 +7,18 @@
 #include "audio_alert.h"
 
 // =====================================================
-// Alert Collection
+// handleDataPayload
+//
+// Entry point for all MSG_TYPE_DATA frames (0x01).
+// Distinguishes MEASURE_RESP from SHAKE_ALERT via the
+// "e" field in the JSON payload.
+//
+// Called AFTER sendAck() — the IoT node is already
+// released from its retry loop when this runs.
 // =====================================================
-void collectAlertFiles(JsonDocument& doc, int rssi);
+void handleDataPayload(const char *json, int rssi, float snr);
 
 // =====================================================
-// Secure Packet Handler
+// Alert file collection (used internally)
 // =====================================================
-void handleSecurePacket(const uint8_t *frame, size_t frameLen, int rssi, float snr);
+void collectAlertFiles(JsonDocument& doc, int rssi);

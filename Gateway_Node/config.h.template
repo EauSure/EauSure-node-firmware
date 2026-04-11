@@ -71,7 +71,7 @@ static const float TEMP_MAX_SAFE = 35.0f;
 // ============================================================
 // COMMUNICATION
 // ============================================================
-static const uint32_t ACK_TIMEOUT_MS = 800;
+static const uint32_t ACK_TIMEOUT_MS = 1500;
 static const uint8_t ACK_RETRY_MAX = 3;
 
 // ============================================================

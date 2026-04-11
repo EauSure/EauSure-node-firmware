@@ -7,37 +7,36 @@
 #include "app_state.h"
 
 // =====================================================
-// LoRa Init
+// LoRa init
 // =====================================================
 bool initLoRa();
 
 // =====================================================
-// LoRa Transmit Functions
+// Gateway → IoT  typed command TX functions
+//
+//  sendActivate()      — boot handshake, activates node
+//  sendMeasureReq()    — request fresh sensor reading
+//  sendHeartbeatReq()  — lightweight liveness ping
 // =====================================================
-void deselectLoRa();
-bool loraSendRaw(const uint8_t *data, size_t len);
-void loraSendString(const String& msg);
-void loraSendChar(char c);
+bool sendActivate();
+bool sendMeasureReq();
+bool sendHeartbeatReq();
 
 // =====================================================
-// Secure Protocol
+// Transport-level ACK sent to IoT node
 // =====================================================
-bool sendSecureAck(uint32_t seq);
+bool sendAck(uint32_t seq);
 
-bool parseAndVerifyDataFrame(
-  const uint8_t *frame,
-  size_t frameLen,
-  uint32_t &seqOut,
-  uint8_t *plainOut,
-  uint16_t &plainLenOut
-);
+// =====================================================
+// Incoming DATA frame parser
+// Called from loop() when a DATA frame arrives.
+// Handles MEASURE_RESP and SHAKE_ALERT (both type=0x01).
+// =====================================================
+bool parseAndDispatchDataFrame(const uint8_t *frame, size_t frameLen,
+                                int rssi, float snr);
 
-bool parseAndVerifyControlFrame(
-  const uint8_t *frame,
-  size_t frameLen,
-  uint32_t &seqOut,
-  uint8_t *plainOut,
-  uint16_t &plainLenOut
-);
-
-bool secureSendControl(const String& json);
+// =====================================================
+// Incoming IoT→GW typed frame parser
+// Called from loop() for non-DATA frames (ACTIVATE_OK, HB_ACK).
+// =====================================================
+bool parseAndDispatchTypedFrame(const uint8_t *frame, size_t frameLen, int rssi, float snr);
