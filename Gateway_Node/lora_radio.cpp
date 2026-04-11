@@ -335,22 +335,30 @@ static bool verifySecureAckFrame(const uint8_t *frame, size_t frameLen, uint32_t
 }
 
 static bool waitForAck(uint32_t seq, uint32_t timeoutMs) {
+  const uint32_t start = millis();
   uint8_t buf[MAX_FRAME_LEN];
   size_t len = 0;
 
-  if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
-    Serial.print("[GCM WAIT ACK] timeout seq=");
+  while ((millis() - start) < timeoutMs) {
+    const uint32_t elapsed = millis() - start;
+    const uint32_t remaining = timeoutMs - elapsed;
+    const uint32_t slice = (remaining > 60) ? 60 : remaining;
+
+    if (!loraReadRaw(buf, sizeof(buf), len, slice)) {
+      continue;
+    }
+
+    if (verifySecureAckFrame(buf, len, seq)) {
+      return true;
+    }
+
+    Serial.print("[GCM WAIT ACK] non-ACK or mismatched ACK while waiting seq=");
     Serial.println(seq);
-    return false;
   }
 
-  if (!verifySecureAckFrame(buf, len, seq)) {
-    Serial.print("[GCM WAIT ACK] invalid ACK seq=");
-    Serial.println(seq);
-    return false;
-  }
-
-  return true;
+  Serial.print("[GCM WAIT ACK] timeout seq=");
+  Serial.println(seq);
+  return false;
 }
 
 bool secureSendControl(const String& json) {

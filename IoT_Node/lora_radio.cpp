@@ -339,23 +339,34 @@ static bool verifySecureFrame(
 }
 
 static bool waitForAck(uint32_t seq, uint32_t timeoutMs) {
+  const uint32_t start = millis();
   uint8_t buf[MAX_FRAME_LEN];
   size_t len = 0;
 
-  if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
-    Serial.print("[GCM WAIT ACK] timeout seq=");
+  while ((millis() - start) < timeoutMs) {
+    const uint32_t elapsed = millis() - start;
+    const uint32_t remaining = timeoutMs - elapsed;
+    const uint32_t slice = (remaining > 60) ? 60 : remaining;
+
+    if (!loraReadRaw(buf, sizeof(buf), len, slice)) {
+      continue;
+    }
+
+    Serial.print("[GCM WAIT ACK] got packet len=");
+    Serial.print((int)len);
+    Serial.print(" seq=");
     Serial.println(seq);
-    return false;
+
+    uint8_t plain[32];
+    size_t plainLen = 0;
+    if (verifySecureFrame(buf, len, MSG_TYPE_ACK, seq, plain, plainLen)) {
+      return true;
+    }
   }
 
-  Serial.print("[GCM WAIT ACK] got packet len=");
-  Serial.print((int)len);
-  Serial.print(" seq=");
+  Serial.print("[GCM WAIT ACK] timeout seq=");
   Serial.println(seq);
-
-  uint8_t plain[32];
-  size_t plainLen = 0;
-  return verifySecureFrame(buf, len, MSG_TYPE_ACK, seq, plain, plainLen);
+  return false;
 }
 
 bool loraInit() {
