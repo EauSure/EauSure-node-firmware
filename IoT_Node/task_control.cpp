@@ -23,15 +23,33 @@ static void controlTask(void *pv) {
   Serial.println("[CTRL TASK] Started — listening for gateway commands");
   Serial.println("[CTRL TASK] Waiting for ACTIVATE from gateway...");
 
-  for (;;) {
-    // pollCommandFrame blocks up to 300 ms then returns.
-    // When a frame arrives it: ACKs it, dispatches it.
-    // When MEASURE_REQ arrives it sends xTaskNotifyGive to SensorTask.
+for (;;) {
+  // Ne lire le canal que si secureSend n'est pas en cours,
+  // pour éviter de voler l'ACK destiné à waitForAck
+  if (uxSemaphoreGetCount(gLoRaMutex) > 0) {
     pollCommandFrame(300);
-
-    // Yield briefly between listen windows
-    vTaskDelay(pdMS_TO_TICKS(10));
+  } else {
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
+
+  // Envoyer le shake en attente si aucune tâche en cours
+  if (gPendingShake.pending && !gEventState.measureInProgress) {
+    // Vérifier aussi que le mutex est libre avant de tenter l'envoi
+    if (uxSemaphoreGetCount(gLoRaMutex) > 0) {
+      StaticJsonDocument<96> doc;
+      doc["e"]  = "SHAKE";
+      doc["ag"] = round(gPendingShake.amag     * 100.0f) / 100.0f;
+      doc["dg"] = round(gPendingShake.dynamicG * 100.0f) / 100.0f;
+      String payload;
+      serializeJson(doc, payload);
+
+      gPendingShake.pending = false;
+      sendShakeAlert(payload);
+    }
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(10));
+}
 }
 
 void startControlTask() {

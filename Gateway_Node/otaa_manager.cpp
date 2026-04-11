@@ -120,6 +120,8 @@ void handleActivateOk(const char *json, int rssi, float snr) {
   gNodeMac         = mac;
   gActivatePending = false;
 
+  lastAcceptedSeq  = 0; 
+
   // Kick off timers from now so we don't immediately fire
   gLastMeasureAt   = millis();
   gLastHeartbeatAt = millis();
@@ -147,4 +149,11 @@ void handleHeartbeatAck(const char *json, int rssi, float snr) {
 
   Serial.printf("[OTAA] HEARTBEAT_ACK — batt=%d%% state=%s RSSI=%d SNR=%.1f\n",
                 batt, state.c_str(), rssi, snr);
+
+  // Si le nœud a redémarré sans que le Gateway le sache, relancer le handshake
+  if (state == "inactive") {
+    Serial.println("[OTAA] Node inactive — triggering re-ACTIVATE");
+    gActivatePending = true;
+    gLastActivateAt  = 0;  // force envoi immédiat au prochain tick
+  }
 }

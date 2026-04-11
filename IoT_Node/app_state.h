@@ -230,3 +230,10 @@ bool buildSecureFrame(
   uint8_t *outFrame,
   size_t &outLen
 );
+
+struct PendingShake {
+  bool     pending = false;
+  float    amag    = 0.0f;
+  float    dynamicG = 0.0f;
+};
+extern PendingShake gPendingShake;

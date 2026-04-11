@@ -18,6 +18,8 @@ Adafruit_NeoPixel  pixel(RGB_COUNT, RGB_PIN, NEO_GRB + NEO_KHZ800);
 bool               rgbActive = false;
 uint32_t           rgbOffAt  = 0;
 
+PendingShake gPendingShake;
+
 // =====================================================
 // Shared state
 // =====================================================
@@ -428,7 +430,11 @@ void checkShakeAndAlert() {
 
   // sendShakeAlert acquires gLoRaMutex with portMAX_DELAY —
   // it will wait as long as needed; shake is highest priority.
-  sendShakeAlert(payload);
+  if (!gPendingShake.pending) {   // garde seulement le plus fort si plusieurs
+  gPendingShake.pending  = true;
+  gPendingShake.amag     = amag;
+  gPendingShake.dynamicG = dynamicG;
+}
 }
 
 // =====================================================

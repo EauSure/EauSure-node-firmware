@@ -74,7 +74,7 @@ static void sensorsTask(void *pv) {
     }
 
     readSensorsRoutine();   // ~5 s — sets gEventState.measureInProgress internally
-
+    gEventState.lastEvent = "None"; 
     String json = buildSensorJson();
 
     xSemaphoreGive(gDataMutex);

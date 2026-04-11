@@ -396,18 +396,26 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
 
     if (!cadWaitAndSend(frame, frameLen)) {
       Serial.println("[SECURE SEND] cadWaitAndSend failed — retrying");
-      delay(50);
+      // ── Relâcher le mutex pour laisser ControlTask ACK les commandes entrantes
+      xSemaphoreGive(gLoRaMutex);
+      vTaskDelay(pdMS_TO_TICKS(80));
+      xSemaphoreTake(gLoRaMutex, portMAX_DELAY);
       continue;
     }
 
     Serial.printf("[LORA TX] type=0x%02X seq=%lu attempt=%d cadWaitAndSend=OK\n",
                   msgType, (unsigned long)seq, attempt + 1);
 
-    if (waitForAck(seq, ackTimeoutMs)) {
-      return true;
-    }
+    bool acked = waitForAck(seq, ackTimeoutMs);
+
+    if (acked) return true;
 
     Serial.printf("[SECURE SEND] no ACK for attempt %d\n", attempt + 1);
+
+    // ── Fenêtre inter-tentative : relâche le mutex brièvement
+    xSemaphoreGive(gLoRaMutex);
+    vTaskDelay(pdMS_TO_TICKS(80));   // ControlTask peut ACK une commande entrante ici
+    xSemaphoreTake(gLoRaMutex, portMAX_DELAY);
   }
 
   Serial.printf("[LORA] delivery failed after %d attempts (type=0x%02X seq=%lu)\n",
@@ -467,14 +475,27 @@ bool pollCommandFrame(uint32_t timeoutMs) {
     Serial.println("[CMD PARSE] length mismatch");
     return false;
   }
+  if (msgType == MSG_TYPE_ACK) {
+    // Les ACK ne s'ACKent pas — ignorer
+    Serial.printf("[POLL] received ACK seq=%lu — ignored\n", seq);
+    return false;
+  }
 
-  // ── Replay protection (commands only — skip ACKs) ──
-  if (msgType != MSG_TYPE_ACK && seq <= gCtrlRxSeq && gCtrlRxSeq != 0) {
+ // ── Replay protection ──
+  // ACTIVATE est exempté : le Gateway peut redémarrer avec seq=1
+  // et l'IoT doit toujours accepter le handshake de boot.
+  if (msgType != MSG_TYPE_ACTIVATE && seq <= gCtrlRxSeq && gCtrlRxSeq != 0) {
     Serial.printf("[CMD PARSE] replay rejected: seq=%lu last=%lu\n",
                   (unsigned long)seq, (unsigned long)gCtrlRxSeq);
-    // Re-ACK in case our previous ACK was lost
     sendAck(seq);
     return false;
+  }
+
+  // Sur ACTIVATE : reset du compteur pour accepter la nouvelle session Gateway
+  if (msgType == MSG_TYPE_ACTIVATE) {
+    Serial.printf("[CMD PARSE] ACTIVATE — reset gCtrlRxSeq (%lu → %lu)\n",
+                  (unsigned long)gCtrlRxSeq, (unsigned long)seq);
+    gCtrlRxSeq = 0;  // sera mis à jour à seq après GCM
   }
 
   // ── GCM decrypt ──
@@ -548,22 +569,23 @@ bool pollCommandFrame(uint32_t timeoutMs) {
     }
 
     case MSG_TYPE_HEARTBEAT_REQ: {
-      Serial.println("[CTRL] HEARTBEAT_REQ received — sending HEARTBEAT_ACK");
+        Serial.println("[CTRL] HEARTBEAT_REQ received — sending HEARTBEAT_ACK");
 
-      char jsonBuf[48];
-      snprintf(jsonBuf, sizeof(jsonBuf),
-               "{\"evt\":\"HB_ACK\",\"batt\":%d,\"state\":\"active\"}",
-               gSensorData.battPercent);
+        char jsonBuf[48];
+        snprintf(jsonBuf, sizeof(jsonBuf),
+                "{\"evt\":\"HB_ACK\",\"batt\":%d,\"state\":\"%s\"}",
+                gSensorData.battPercent,
+                gNodeActive ? "active" : "inactive");  // ← signale le vrai état
 
-      if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
-        bool ok = secureSend(MSG_TYPE_HEARTBEAT_ACK, gTxSeq,
-                             (const uint8_t *)jsonBuf, (uint16_t)strlen(jsonBuf));
-        if (ok) gTxSeq++;
-        Serial.printf("[HEARTBEAT_ACK] result: %s\n", ok ? "OK" : "FAILED");
-        xSemaphoreGive(gLoRaMutex);
+        if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+          bool ok = secureSend(MSG_TYPE_HEARTBEAT_ACK, gTxSeq,
+                              (const uint8_t *)jsonBuf, (uint16_t)strlen(jsonBuf));
+          if (ok) gTxSeq++;
+          Serial.printf("[HEARTBEAT_ACK] result: %s\n", ok ? "OK" : "FAILED");
+          xSemaphoreGive(gLoRaMutex);
+        }
+        break;
       }
-      break;
-    }
 
     default:
       Serial.printf("[CTRL] unhandled command type 0x%02X\n", msgType);
