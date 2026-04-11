@@ -4,6 +4,7 @@
 // Global State
 // =====================================================
 uint32_t lastAcceptedSeq = 0;
+uint32_t gTxSeq = 1;
 
 // =====================================================
 // Helper Functions - Binary Encoding/Decoding

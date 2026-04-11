@@ -23,5 +23,6 @@ void setup() {
 }
 
 void loop() {
-  vTaskDelete(nullptr);
+  pollControlFrames(20);
+  delay(10);
 }

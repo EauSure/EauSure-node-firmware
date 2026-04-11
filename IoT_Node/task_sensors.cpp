@@ -17,6 +17,11 @@ static void sensorsTask(void *pv) {
   const TickType_t period = pdMS_TO_TICKS(AUTO_READ_INTERVAL_MS);
 
   for (;;) {
+    if (!gNodeActive) {
+      vTaskDelayUntil(&lastWake, period);
+      continue;
+    }
+
     Serial.print("[SENSORS TASK] Attempting to acquire gDataMutex (timeout 10000ms)...");
     // Note: readSensorsRoutine() takes several seconds to complete (analog stabilization)
     // Use longer timeout to accommodate sensor reading time

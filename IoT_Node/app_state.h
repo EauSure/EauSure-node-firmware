@@ -79,6 +79,7 @@ struct EventState {
 
 extern SensorData gSensorData;
 extern EventState gEventState;
+extern volatile bool gNodeActive;
 
 extern float phVoltageAtNeutral;
 extern float phSlope;

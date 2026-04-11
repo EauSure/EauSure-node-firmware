@@ -3,9 +3,11 @@
 
 #include "mbedtls/aes.h"
 #include "mbedtls/gcm.h"
+#include <esp_sleep.h>
 
 static const uint8_t MSG_TYPE_DATA = 0x01;
 static const uint8_t MSG_TYPE_ACK  = 0x02;
+static const uint8_t MSG_TYPE_CTRL = 0x03;
 
 static const size_t GCM_NONCE_LEN  = 12;  // GCM nonce (IV) - 96-bit is standard
 static const size_t GCM_TAG_LEN    = 16;  // GCM authentication tag - full 128-bit
@@ -13,6 +15,8 @@ static const size_t CRC_LEN        = 2;
 static const size_t HEADER_LEN     = 1 + 1 + 4 + 4 + GCM_NONCE_LEN + 2; // ver,type,device,seq,nonce,payload_len
 static const size_t MAX_PLAIN_LEN  = 180;
 static const size_t MAX_FRAME_LEN  = HEADER_LEN + MAX_PLAIN_LEN + GCM_TAG_LEN + CRC_LEN;
+
+static void handleOtaaControl(const char* json, size_t len, uint32_t seq);
 
 static void writeU16BE(uint8_t *dst, uint16_t v) {
   dst[0] = (uint8_t)((v >> 8) & 0xFF);
@@ -241,11 +245,11 @@ static bool buildSecureFrame(
   return true;
 }
 
-static bool verifySecureFrame(
+static bool parseSecureFrame(
   const uint8_t *frame,
   size_t frameLen,
   uint8_t expectedType,
-  uint32_t expectedSeq,
+  uint32_t &seqOut,
   uint8_t *outPlain,
   size_t &outPlainLen
 ) {
@@ -255,7 +259,6 @@ static bool verifySecureFrame(
     return false;
   }
 
-  // Verify CRC-16
   uint16_t rxCrc = readU16BE(&frame[frameLen - 2]);
   uint16_t calcCrc = crc16Ccitt(frame, frameLen - 2);
   if (rxCrc != calcCrc) {
@@ -263,7 +266,6 @@ static bool verifySecureFrame(
     return false;
   }
 
-  // Verify header fields
   if (frame[0] != PROTO_VERSION) {
     Serial.println("[GCM] Version mismatch");
     return false;
@@ -283,19 +285,10 @@ static bool verifySecureFrame(
     Serial.println(DEVICE_ID, HEX);
     return false;
   }
-  if (seq != expectedSeq) {
-    Serial.print("[GCM] Sequence mismatch: got ");
-    Serial.print(seq);
-    Serial.print(" expected ");
-    Serial.println(expectedSeq);
-    return false;
-  }
 
-  // Extract nonce and ciphertext info
   const uint8_t *nonce = &frame[10];
   uint16_t cipherLen = readU16BE(&frame[10 + GCM_NONCE_LEN]);
 
-  // Extract tag and ciphertext
   size_t cipherPos = HEADER_LEN;
   size_t tagPos = cipherPos + cipherLen;
   size_t crcPos = tagPos + GCM_TAG_LEN;
@@ -305,16 +298,43 @@ static bool verifySecureFrame(
     return false;
   }
 
+  if (cipherLen > MAX_PLAIN_LEN) {
+    Serial.println("[GCM] Payload too large");
+    return false;
+  }
+
   const uint8_t *cipher = &frame[cipherPos];
   const uint8_t *tag = &frame[tagPos];
 
-  // Decrypt and verify authentication tag (AAD = full header including payload length)
   if (!aesgcmDecrypt(cipher, cipherLen, nonce, frame, HEADER_LEN, tag, outPlain)) {
     Serial.println("[GCM] Authentication failed - corrupted or invalid packet");
     return false;
   }
 
+  seqOut = seq;
   outPlainLen = cipherLen;
+  return true;
+}
+
+static bool verifySecureFrame(
+  const uint8_t *frame,
+  size_t frameLen,
+  uint8_t expectedType,
+  uint32_t expectedSeq,
+  uint8_t *outPlain,
+  size_t &outPlainLen
+) {
+  uint32_t seq = 0;
+  if (!parseSecureFrame(frame, frameLen, expectedType, seq, outPlain, outPlainLen)) {
+    return false;
+  }
+  if (seq != expectedSeq) {
+    Serial.print("[GCM] Sequence mismatch: got ");
+    Serial.print(seq);
+    Serial.print(" expected ");
+    Serial.println(expectedSeq);
+    return false;
+  }
   return true;
 }
 
@@ -441,6 +461,181 @@ bool secureSendJson(const String& json) {
   LoRa.receive();
   if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
   return delivered;
+}
+
+static bool sendSecureAck(uint32_t seq) {
+  uint8_t frame[MAX_FRAME_LEN];
+  size_t frameLen = 0;
+
+  if (!buildSecureFrame(MSG_TYPE_ACK, seq, nullptr, 0, frame, frameLen)) {
+    Serial.println("[ACK] build failed");
+    return false;
+  }
+
+  bool ok = loraSendRaw(frame, frameLen);
+  Serial.printf("[ACK] seq=%lu sent=%s\n", (unsigned long)seq, ok ? "yes" : "no");
+  return ok;
+}
+
+bool secureSendControl(const String& json) {
+  uint8_t plain[MAX_PLAIN_LEN];
+  size_t plainLen = json.length();
+
+  if (plainLen == 0 || plainLen > MAX_PLAIN_LEN) {
+    Serial.print("[SEC_CTRL] invalid plaintext length: ");
+    Serial.println((int)plainLen);
+    return false;
+  }
+
+  memcpy(plain, json.c_str(), plainLen);
+
+  if (gLoRaMutex && xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+    Serial.println("[SEC_CTRL] ERROR: Could not acquire LoRa mutex");
+    return false;
+  }
+
+  bool delivered = false;
+  uint32_t seq = gTxSeq;
+
+  for (uint8_t attempt = 0; attempt < ACK_RETRY_MAX; ++attempt) {
+    uint8_t frame[MAX_FRAME_LEN];
+    size_t frameLen = 0;
+
+    if (!buildSecureFrame(MSG_TYPE_CTRL, seq, plain, (uint16_t)plainLen, frame, frameLen)) {
+      Serial.println("[SEC_CTRL] frame build failed");
+      break;
+    }
+
+    if (!loraSendRaw(frame, frameLen)) {
+      Serial.println("[SEC_CTRL] tx failed");
+      continue;
+    }
+
+    Serial.print("[SEC CTRL TX] seq=");
+    Serial.print(seq);
+    Serial.print(" attempt=");
+    Serial.println((int)(attempt + 1));
+
+    if (waitForAck(seq, ACK_TIMEOUT_MS)) {
+      delivered = true;
+      Serial.print("[SEC CTRL ACK] seq=");
+      Serial.println(seq);
+      gTxSeq++;
+      break;
+    }
+
+    Serial.print("[SEC CTRL ACK TIMEOUT] seq=");
+    Serial.println(seq);
+  }
+
+  LoRa.receive();
+  if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
+  return delivered;
+}
+
+void pollControlFrames(uint32_t timeoutMs) {
+  if (gLoRaMutex && xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+    return;
+  }
+
+  uint8_t buf[MAX_FRAME_LEN];
+  size_t len = 0;
+  if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
+    if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
+    return;
+  }
+
+  uint8_t plain[MAX_PLAIN_LEN + 1] = {0};
+  size_t plainLen = 0;
+  uint32_t seq = 0;
+  if (!parseSecureFrame(buf, len, MSG_TYPE_CTRL, seq, plain, plainLen)) {
+    if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
+    return;
+  }
+
+  sendSecureAck(seq);
+  plain[plainLen] = '\0';
+  if (gLoRaMutex) xSemaphoreGive(gLoRaMutex);
+
+  handleOtaaControl((const char*)plain, plainLen, seq);
+}
+
+static String getNodeMacId() {
+  uint64_t chip = ESP.getEfuseMac();
+  char mac[13];
+  snprintf(mac, sizeof(mac), "%04X%08lX", (uint16_t)(chip >> 32), (uint32_t)chip);
+  return String(mac);
+}
+
+static void sendNodeStatus(const char *evt, uint32_t seq) {
+  JsonDocument doc;
+  doc["evt"] = evt;
+  doc["state"] = gNodeActive ? "active" : "sleep";
+  doc["mac"] = getNodeMacId();
+  doc["uptime"] = millis();
+  doc["seq"] = seq;
+  doc["tx_seq"] = gTxSeq;
+
+  String out;
+  serializeJson(doc, out);
+  secureSendControl(out);
+}
+
+static void handleOtaaControl(const char* json, size_t len, uint32_t seq) {
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, json, len);
+  if (err) {
+    Serial.print("[OTAA] Control parse error: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  String cmd = doc["cmd"] | "";
+  if (cmd.length() == 0) {
+    Serial.println("[OTAA] Control frame missing cmd");
+    return;
+  }
+
+  if (cmd == "PAIR_REQ") {
+    gNodeActive = true;
+    sendNodeStatus("PAIR_OK", seq);
+    Serial.println("[OTAA] PAIR_REQ handled -> PAIR_OK");
+    return;
+  }
+
+  if (cmd == "HEARTBEAT_REQ") {
+    sendNodeStatus("HEARTBEAT", seq);
+    Serial.println("[OTAA] HEARTBEAT sent");
+    return;
+  }
+
+  if (cmd == "STATUS_REQ") {
+    sendNodeStatus("STATUS", seq);
+    Serial.println("[OTAA] STATUS sent");
+    return;
+  }
+
+  if (cmd == "SET_ACTIVE") {
+    int value = doc["value"] | 1;
+    gNodeActive = (value != 0);
+    sendNodeStatus("STATUS", seq);
+    Serial.printf("[OTAA] SET_ACTIVE value=%d\n", value);
+    return;
+  }
+
+  if (cmd == "SET_SLEEP") {
+    uint32_t sleepSeconds = doc["seconds"] | 120;
+    gNodeActive = false;
+    sendNodeStatus("STATUS", seq);
+    Serial.printf("[OTAA] Entering deep sleep for %lu s\n", (unsigned long)sleepSeconds);
+    delay(100);
+    esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
+    esp_deep_sleep_start();
+    return;
+  }
+
+  Serial.print("[OTAA] Unknown control cmd: ");
+  Serial.println(cmd);
 }
 
 void sendJsonData() {

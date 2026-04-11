@@ -31,3 +31,13 @@ bool parseAndVerifyDataFrame(
   uint8_t *plainOut,
   uint16_t &plainLenOut
 );
+
+bool parseAndVerifyControlFrame(
+  const uint8_t *frame,
+  size_t frameLen,
+  uint32_t &seqOut,
+  uint8_t *plainOut,
+  uint16_t &plainLenOut
+);
+
+bool secureSendControl(const String& json);

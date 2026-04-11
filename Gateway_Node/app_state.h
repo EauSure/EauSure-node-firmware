@@ -10,6 +10,7 @@
 // =====================================================
 static const uint8_t MSG_TYPE_DATA = 0x01;
 static const uint8_t MSG_TYPE_ACK  = 0x02;
+static const uint8_t MSG_TYPE_CTRL = 0x03;
 
 static const size_t GCM_NONCE_LEN  = 12;
 static const size_t GCM_TAG_LEN    = 16;
@@ -22,6 +23,7 @@ static const size_t MAX_FRAME_LEN  = HEADER_LEN + MAX_PLAIN_LEN + GCM_TAG_LEN + 
 // Global State
 // =====================================================
 extern uint32_t lastAcceptedSeq;
+extern uint32_t gTxSeq;
 
 // =====================================================
 // Helper Functions - Binary Encoding/Decoding

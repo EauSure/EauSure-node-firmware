@@ -18,6 +18,7 @@ uint32_t rgbOffAt = 0;
 
 SensorData gSensorData;
 EventState gEventState;
+volatile bool gNodeActive = true;
 
 float phVoltageAtNeutral = PH_VOLTAGE_AT_NEUTRAL;
 float phSlope = PH_SLOPE;
