@@ -1,7 +1,17 @@
 #include "telemetry.h"
 #include "wifi_manager.h"
 #include "otaa_manager.h"
+#include "config.h"
 
+static String getNodeIdString() {
+  char buf[11];
+  snprintf(buf, sizeof(buf), "0x%08lX", (unsigned long)DEVICE_ID);
+  return String(buf);
+}
+
+static String getGatewayHardwareIdString() {
+  return WiFiManager::getMacAddress();
+}
 // =====================================================
 // collectAlertFiles — queue WAV alerts based on payload
 // =====================================================
@@ -77,7 +87,12 @@ static void printDataPayload(JsonDocument& doc, uint32_t seq,
 static void submitToCloud(JsonDocument& doc, uint32_t seq, int rssi, float snr) {
   Serial.println("[Cloud] Submitting to API...");
 
+  String nodeId = getNodeIdString();
+  String gatewayHardwareId = getGatewayHardwareIdString();
+
   bool ok = WiFiManager::submitSensorData(
+    nodeId.c_str(),
+    gatewayHardwareId.c_str(),
     seq,
     doc["b"]  | 0,
     doc["v"]  | 0.0f,
@@ -98,7 +113,6 @@ static void submitToCloud(JsonDocument& doc, uint32_t seq, int rssi, float snr) 
 
   Serial.println(ok ? "[Cloud] ✓ Sent successfully" : "[Cloud] ✗ Send failed");
 }
-
 // =====================================================
 // handleDataPayload
 //

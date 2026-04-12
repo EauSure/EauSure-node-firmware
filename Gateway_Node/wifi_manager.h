@@ -6,17 +6,19 @@
 #include "config.h"
 
 namespace WiFiManager {
-    // Initialize WiFi connection
-    bool init();
-    
+    // Initialize WiFi connection with runtime credentials
+    bool init(const char* ssid, const char* password);
+
+    // Retry using the last runtime credentials
+    bool reconnect();
+
     // Check if connected
     bool isConnected();
-    
-    // Reconnect if disconnected
-    bool reconnect();
-    
+
     // Submit sensor data to API
     bool submitSensorData(
+        const char* nodeId,
+        const char* gatewayHardwareId,
         uint32_t seq,
         uint8_t battery,
         float voltage,
@@ -34,12 +36,16 @@ namespace WiFiManager {
         int8_t rssi,
         float snr
     );
-    
+
     // Get WiFi status string
     const char* getStatusString();
-    
+
     // Get signal strength
     int8_t getSignalStrength();
+
+    // Useful helpers
+    String getIP();
+    String getMacAddress();
 }
 
 #endif

@@ -53,15 +53,16 @@ void initOtaaManager() {
 // =====================================================
 void otaaTick() {
   const uint32_t now = millis();
+
   if (isGatewayCommandInFlight()) {
-  return;
-}
+    return;
+  }
 
   // ── Phase 1: ACTIVATE handshake ──
   // Retry every ACTIVATE_RETRY_MS until ACTIVATE_OK received.
   if (gActivatePending) {
     if ((now - gLastActivateAt >= ACTIVATE_RETRY_MS) &&
-    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+        (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
       gLastActivateAt = now;
       Serial.println("[OTAA] Sending ACTIVATE...");
       gLastCommandTxAt = now;
@@ -74,25 +75,27 @@ void otaaTick() {
     return;   // don't send MEASURE_REQ or HEARTBEAT until paired
   }
 
-  // ── Phase 2: Periodic HEARTBEAT (every 10 s) ──
+  // ── Phase 2: Periodic HEARTBEAT ──
   if ((now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) &&
-    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+      (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
     gLastHeartbeatAt = now;
     gLastCommandTxAt = now;
     if (!sendHeartbeatReq()) {
       Serial.println("[OTAA] HEARTBEAT_REQ failed — node may be unreachable");
     }
+    return;
   }
 
-  // ── Phase 3: Periodic MEASURE_REQ (every 60 s) ──
+  // ── Phase 3: Periodic MEASURE_REQ ──
   if ((now - gLastMeasureAt >= MEASURE_INTERVAL_MS) &&
-    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+      (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
     gLastCommandTxAt = now;
     gLastMeasureAt = now;
     Serial.println("[OTAA] Auto MEASURE_REQ (60 s interval)");
     if (!sendMeasureReq()) {
       Serial.println("[OTAA] MEASURE_REQ failed");
     }
+    return;
   }
 }
 
@@ -105,6 +108,12 @@ void requestMeasureNow() {
     Serial.println("[OTAA] Cannot measure — node not paired yet");
     return;
   }
+
+  if (isGatewayCommandInFlight()) {
+    Serial.println("[OTAA] Cannot measure now — another command is in flight");
+    return;
+  }
+
   Serial.println("[OTAA] Manual MEASURE_REQ triggered");
   gLastMeasureAt = millis();   // reset auto-timer so we don't double-fire
   gLastCommandTxAt = millis();
@@ -133,7 +142,7 @@ void handleActivateOk(const char *json, int rssi, float snr) {
   gNodeMac         = mac;
   gActivatePending = false;
 
-  lastAcceptedSeq  = 0; 
+  lastAcceptedSeq  = 0;
 
   // Kick off timers from now so we don't immediately fire
   gLastMeasureAt   = millis();
