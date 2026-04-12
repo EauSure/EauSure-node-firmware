@@ -18,6 +18,7 @@ bool initLoRa();
 //  sendMeasureReq()    — request fresh sensor reading
 //  sendHeartbeatReq()  — lightweight liveness ping
 // =====================================================
+bool isGatewayCommandInFlight();
 bool sendActivate();
 bool sendMeasureReq();
 bool sendHeartbeatReq();

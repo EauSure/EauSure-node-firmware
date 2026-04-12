@@ -53,6 +53,9 @@ void initOtaaManager() {
 // =====================================================
 void otaaTick() {
   const uint32_t now = millis();
+  if (isGatewayCommandInFlight()) {
+  return;
+}
 
   // ── Phase 1: ACTIVATE handshake ──
   // Retry every ACTIVATE_RETRY_MS until ACTIVATE_OK received.

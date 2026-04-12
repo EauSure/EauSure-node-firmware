@@ -15,6 +15,7 @@ static const uint8_t  CAD_MAX_RETRIES = 8;
 
 static volatile bool cadDone     = false;
 static volatile bool cadDetected = false;
+static bool gCommandInFlight = false;
 
 // =====================================================
 // ISR — DIO0 signals CadDone
@@ -142,7 +143,12 @@ static bool loraReadRaw(uint8_t *buf, size_t cap, size_t &outLen, uint32_t timeo
 // so they are not lost — this includes ACTIVATE_OK and
 // HEARTBEAT_ACK which were previously silently dropped.
 // =====================================================
-static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 8000) {
+
+
+bool isGatewayCommandInFlight() {
+  return gCommandInFlight;
+}
+static bool waitForAck(uint8_t expectedCmdType, uint32_t seq, uint32_t timeoutMs = 8000) {
   uint8_t  buf[MAX_FRAME_LEN];
   size_t   len   = 0;
   uint32_t start = millis();
@@ -170,18 +176,31 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 8000) {
       // a separate ACK for those via the normal secureSend path).
       int   rssi = LoRa.packetRssi();
       float snr  = LoRa.packetSnr();
-      switch (buf[1]) {
+            switch (buf[1]) {
         case MSG_TYPE_ACTIVATE_OK:
-          Serial.println("[GW ACK WAIT] ACTIVATE_OK received — implicit ACK for ACTIVATE");
+          if (expectedCmdType == MSG_TYPE_ACTIVATE) {
+            Serial.println("[GW ACK WAIT] ACTIVATE_OK received — implicit ACK for ACTIVATE");
+            parseAndDispatchTypedFrame(buf, len, rssi, snr);
+            return true;
+          }
+          Serial.println("[GW ACK WAIT] ACTIVATE_OK received out of context — dispatched only");
           parseAndDispatchTypedFrame(buf, len, rssi, snr);
-          return true;
+          break;
+
         case MSG_TYPE_HEARTBEAT_ACK:
-          Serial.println("[GW ACK WAIT] HEARTBEAT_ACK received — implicit ACK for HEARTBEAT_REQ");
+          if (expectedCmdType == MSG_TYPE_HEARTBEAT_REQ) {
+            Serial.println("[GW ACK WAIT] HEARTBEAT_ACK received — implicit ACK for HEARTBEAT_REQ");
+            parseAndDispatchTypedFrame(buf, len, rssi, snr);
+            return true;
+          }
+          Serial.println("[GW ACK WAIT] HEARTBEAT_ACK received out of context — dispatched only");
           parseAndDispatchTypedFrame(buf, len, rssi, snr);
-          return true;
+          break;
+
         case MSG_TYPE_DATA:
           parseAndDispatchDataFrame(buf, len, rssi, snr);
           break;
+
         default:
           Serial.printf("[GW ACK WAIT] unexpected type 0x%02X — ignored\n", buf[1]);
           break;
@@ -213,6 +232,14 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 8000) {
 // secureCommand — internal: build + CAD-send + wait ACK
 // =====================================================
 static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainLen) {
+  if (gCommandInFlight) {
+    Serial.println("[GW CMD] another command is already in flight");
+    return false;
+  }
+
+  gCommandInFlight = true;
+
+  bool success = false;
   uint32_t seq = gTxSeq;
 
   for (uint8_t attempt = 0; attempt < ACK_RETRY_MAX; attempt++) {
@@ -221,7 +248,7 @@ static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainL
 
     if (!buildSecureFrame(msgType, seq, plain, plainLen, frame, frameLen)) {
       Serial.println("[GW CMD] frame build failed");
-      return false;
+      break;
     }
 
     if (!cadWaitAndSend(frame, frameLen)) {
@@ -232,18 +259,23 @@ static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainL
     Serial.printf("[GW CMD TX] type=0x%02X seq=%lu attempt=%d\n",
                   msgType, (unsigned long)seq, attempt + 1);
 
-    if (waitForAck(seq)) {
+    if (waitForAck(msgType, seq)) {
       gTxSeq++;
       Serial.printf("[GW CMD ACK] type=0x%02X seq=%lu confirmed\n",
                     msgType, (unsigned long)seq);
-      return true;
+      success = true;
+      break;
     }
   }
 
-  Serial.printf("[GW CMD] delivery failed after %d attempts (type=0x%02X)\n",
-                ACK_RETRY_MAX, msgType);
-  LoRa.receive();
-  return false;
+  if (!success) {
+    Serial.printf("[GW CMD] delivery failed after %d attempts (type=0x%02X)\n",
+                  ACK_RETRY_MAX, msgType);
+    LoRa.receive();
+  }
+
+  gCommandInFlight = false;
+  return success;
 }
 
 // =====================================================
