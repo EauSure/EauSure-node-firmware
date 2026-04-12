@@ -38,6 +38,9 @@ SemaphoreHandle_t gI2CMutex       = nullptr;
 SemaphoreHandle_t gLoRaMutex      = nullptr;
 TaskHandle_t      gSensorTaskHandle = nullptr;
 
+
+volatile bool gAckWaitActive = false;
+
 // =====================================================
 // Sequence counters
 //   gTxSeq     — IoT outgoing frame counter (DATA / ACTIVATE_OK / HEARTBEAT_ACK)

@@ -15,6 +15,9 @@ namespace {
   uint32_t gLastHeartbeatAt = 0;
   uint32_t gLastActivateAt  = 0;
 
+  uint32_t gLastCommandTxAt = 0;
+  static const uint32_t COMMAND_GAP_MS = 300;
+
   bool     gActivatePending = true;   // true until first ACTIVATE_OK received
 
   // How long to wait between ACTIVATE retries at boot (ms)
@@ -54,9 +57,11 @@ void otaaTick() {
   // ── Phase 1: ACTIVATE handshake ──
   // Retry every ACTIVATE_RETRY_MS until ACTIVATE_OK received.
   if (gActivatePending) {
-    if (now - gLastActivateAt >= ACTIVATE_RETRY_MS) {
+    if ((now - gLastActivateAt >= ACTIVATE_RETRY_MS) &&
+    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
       gLastActivateAt = now;
       Serial.println("[OTAA] Sending ACTIVATE...");
+      gLastCommandTxAt = now;
       if (sendActivate()) {
         Serial.println("[OTAA] ACTIVATE delivered — waiting for ACTIVATE_OK");
       } else {
@@ -67,15 +72,19 @@ void otaaTick() {
   }
 
   // ── Phase 2: Periodic HEARTBEAT (every 10 s) ──
-  if (now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+  if ((now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) &&
+    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
     gLastHeartbeatAt = now;
+    gLastCommandTxAt = now;
     if (!sendHeartbeatReq()) {
       Serial.println("[OTAA] HEARTBEAT_REQ failed — node may be unreachable");
     }
   }
 
   // ── Phase 3: Periodic MEASURE_REQ (every 60 s) ──
-  if (now - gLastMeasureAt >= MEASURE_INTERVAL_MS) {
+  if ((now - gLastMeasureAt >= MEASURE_INTERVAL_MS) &&
+    (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+    gLastCommandTxAt = now;
     gLastMeasureAt = now;
     Serial.println("[OTAA] Auto MEASURE_REQ (60 s interval)");
     if (!sendMeasureReq()) {
@@ -95,6 +104,7 @@ void requestMeasureNow() {
   }
   Serial.println("[OTAA] Manual MEASURE_REQ triggered");
   gLastMeasureAt = millis();   // reset auto-timer so we don't double-fire
+  gLastCommandTxAt = millis();
   if (!sendMeasureReq()) {
     Serial.println("[OTAA] Manual MEASURE_REQ failed");
   }

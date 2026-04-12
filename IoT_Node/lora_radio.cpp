@@ -315,13 +315,22 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 1500) {
   size_t   len   = 0;
   uint32_t start = millis();
 
+  gAckWaitActive = true;
+
   while ((millis() - start) < timeoutMs) {
+
+    xSemaphoreGive(gLoRaMutex);
+    taskYIELD();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    xSemaphoreTake(gLoRaMutex, portMAX_DELAY);
+
     uint32_t remaining = timeoutMs - (millis() - start);
     uint32_t slice     = (remaining > 100) ? 100 : remaining;
 
     if (!loraReadRaw(buf, sizeof(buf), len, slice)) continue;
     if (len < HEADER_LEN + GCM_TAG_LEN + CRC_LEN) continue;
 
+    // ── CRC check ──
     uint16_t rxCrc   = readU16BE(&buf[len - 2]);
     uint16_t calcCrc = crc16Ccitt(buf, len - 2);
     if (rxCrc != calcCrc) {
@@ -329,23 +338,16 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 1500) {
       continue;
     }
 
-    // Must be an ACK frame for our device and seq
-    if (buf[0] != PROTO_VERSION)       continue;
+    // ── Header check ──
+    if (buf[0] != PROTO_VERSION) continue;
+
+    // ── ONLY process ACK frames here ──
     if (buf[1] != MSG_TYPE_ACK) {
-      // A command frame arrived while we're waiting for our ACK.
-      // This happens when the gateway retries ACTIVATE before our ACTIVATE_OK landed.
-      // Re-ACK it so the gateway stops retrying, then keep waiting for our ACK.
-      if (buf[1] == MSG_TYPE_ACTIVATE || buf[1] == MSG_TYPE_MEASURE_REQ ||
-          buf[1] == MSG_TYPE_HEARTBEAT_REQ) {
-        uint16_t rxCrc2   = readU16BE(&buf[len - 2]);
-        uint16_t calcCrc2 = crc16Ccitt(buf, len - 2);
-        if (rxCrc2 == calcCrc2) {
-          uint32_t retrySeq = readU32BE(&buf[6]);
-          Serial.printf("[ACK WAIT] command retry type=0x%02X seq=%lu — re-ACKing\n",
-                        buf[1], (unsigned long)retrySeq);
-          sendAck(retrySeq);
-        }
-      }
+      // IMPORTANT FIX:
+      // Do NOT process or ACK commands here.
+      // Let ControlTask (pollCommandFrame) handle them safely
+      // after full AES-GCM authentication.
+      Serial.printf("[ACK WAIT] non-ACK frame (type=0x%02X) ignored\n", buf[1]);
       continue;
     }
 
@@ -353,23 +355,30 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 1500) {
     uint32_t rxSeq     = readU32BE(&buf[6]);
     if (deviceId != DEVICE_ID || rxSeq != seq) continue;
 
-    // ACK carries no payload — cipherLen must be 0
+    // ACK carries no payload
     uint16_t cipherLen = readU16BE(&buf[10 + GCM_NONCE_LEN]);
     if (cipherLen != 0) continue;
     if (len != HEADER_LEN + GCM_TAG_LEN + CRC_LEN) continue;
 
     const uint8_t *nonce = &buf[10];
     uint8_t dummy[1] = {0};
-    if (aesgcmDecrypt(buf + HEADER_LEN, 0, nonce, buf, HEADER_LEN,
-                      buf + HEADER_LEN, dummy)) {
+
+    if (aesgcmDecrypt(buf + HEADER_LEN, 0, nonce,
+                      buf, HEADER_LEN,
+                      buf + HEADER_LEN,
+                      dummy)) {
+
       Serial.printf("[ACK WAIT] ACK confirmed seq=%lu\n", (unsigned long)seq);
+      gAckWaitActive = false;
       return true;
     }
+
     Serial.println("[ACK WAIT] GCM auth failed on ACK — ignored");
   }
 
   Serial.printf("[ACK WAIT] timeout after %lu ms — seq=%lu never ACKed\n",
                 (unsigned long)timeoutMs, (unsigned long)seq);
+  gAckWaitActive = false;
   return false;
 }
 
@@ -394,11 +403,23 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
     Serial.printf("[SECURE SEND] type=0x%02X seq=%lu plainLen=%u attempt=%d/%d\n",
                   msgType, (unsigned long)seq, plainLen, attempt + 1, ACK_RETRY_MAX);
 
+    vTaskDelay(pdMS_TO_TICKS(random(80, 200)));
+
+
     if (!cadWaitAndSend(frame, frameLen)) {
       Serial.println("[SECURE SEND] cadWaitAndSend failed — retrying");
       // ── Relâcher le mutex pour laisser ControlTask ACK les commandes entrantes
       xSemaphoreGive(gLoRaMutex);
-      vTaskDelay(pdMS_TO_TICKS(80));
+
+      // Give ControlTask time to:
+      // 1. read frame
+      // 2. decrypt
+      // 3. ACK safely
+      for (int i = 0; i < 3; i++) {
+          taskYIELD();
+          vTaskDelay(pdMS_TO_TICKS(10));
+      }
+
       xSemaphoreTake(gLoRaMutex, portMAX_DELAY);
       continue;
     }
@@ -414,7 +435,8 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
 
     // ── Fenêtre inter-tentative : relâche le mutex brièvement
     xSemaphoreGive(gLoRaMutex);
-    vTaskDelay(pdMS_TO_TICKS(80));   // ControlTask peut ACK une commande entrante ici
+    taskYIELD();
+    vTaskDelay(pdMS_TO_TICKS(10));
     xSemaphoreTake(gLoRaMutex, portMAX_DELAY);
   }
 
@@ -544,11 +566,11 @@ bool pollCommandFrame(uint32_t timeoutMs) {
       Serial.printf("[ACTIVATE_OK] payload: %s (%u bytes)\n",
                     jsonBuf, (unsigned)strlen(jsonBuf));
 
-      if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+      if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
         Serial.println("[ACTIVATE_OK] mutex acquired — sending");
         bool ok = secureSend(MSG_TYPE_ACTIVATE_OK, gTxSeq,
                              (const uint8_t *)jsonBuf, (uint16_t)strlen(jsonBuf),
-                             3000);  // 3 s — gateway needs CAD + TX time to ACK
+                             5000);  // 5 s — gateway needs CAD + TX time to ACK
         if (ok) gTxSeq++;
         Serial.printf("[ACTIVATE_OK] result: %s\n", ok ? "OK" : "FAILED");
         xSemaphoreGive(gLoRaMutex);
@@ -577,9 +599,10 @@ bool pollCommandFrame(uint32_t timeoutMs) {
                 gSensorData.battPercent,
                 gNodeActive ? "active" : "inactive");  // ← signale le vrai état
 
-        if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        if (xSemaphoreTake(gLoRaMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
           bool ok = secureSend(MSG_TYPE_HEARTBEAT_ACK, gTxSeq,
-                              (const uint8_t *)jsonBuf, (uint16_t)strlen(jsonBuf));
+                              (const uint8_t *)jsonBuf, (uint16_t)strlen(jsonBuf),
+                              5000);  // 5 s — gateway needs CAD + TX time to ACK
           if (ok) gTxSeq++;
           Serial.printf("[HEARTBEAT_ACK] result: %s\n", ok ? "OK" : "FAILED");
           xSemaphoreGive(gLoRaMutex);
@@ -641,7 +664,7 @@ bool sendMeasureResp(const String &sensorJson) {
   bool ok = secureSend(MSG_TYPE_DATA, gTxSeq,
                        (const uint8_t *)sensorJson.c_str(),
                        (uint16_t)sensorJson.length(),
-                       2000);
+                       3000);
   if (ok) gTxSeq++;
 
   xSemaphoreGive(gLoRaMutex);
@@ -669,7 +692,7 @@ void sendShakeAlert(const String &shakeJson) {
   bool ok = secureSend(MSG_TYPE_DATA, gTxSeq,
                        (const uint8_t *)shakeJson.c_str(),
                        (uint16_t)shakeJson.length(),
-                       2000);
+                       3000);
   if (ok) gTxSeq++;
 
   xSemaphoreGive(gLoRaMutex);

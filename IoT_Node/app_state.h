@@ -49,6 +49,7 @@ static const size_t HEADER_LEN    = 1 + 1 + 4 + 4 + GCM_NONCE_LEN + 2;
 static const size_t MAX_PLAIN_LEN = 180;
 static const size_t MAX_FRAME_LEN = HEADER_LEN + MAX_PLAIN_LEN + GCM_TAG_LEN + CRC_LEN;
 
+
 // =====================================================
 // OLED
 // =====================================================
@@ -90,6 +91,7 @@ extern uint32_t rgbOffAt;
 // =====================================================
 extern uint32_t gTxSeq;
 extern uint32_t gCtrlRxSeq;
+extern volatile bool gAckWaitActive;
 
 // =====================================================
 // Shared sensor data

@@ -26,10 +26,10 @@ static void controlTask(void *pv) {
 for (;;) {
   // Ne lire le canal que si secureSend n'est pas en cours,
   // pour éviter de voler l'ACK destiné à waitForAck
-  if (uxSemaphoreGetCount(gLoRaMutex) > 0) {
+  if (!gAckWaitActive && uxSemaphoreGetCount(gLoRaMutex) > 0) {
     pollCommandFrame(300);
   } else {
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 
   // Envoyer le shake en attente si aucune tâche en cours
