@@ -9,6 +9,14 @@ struct GatewayProvisionResult {
   String mqttTopic;
 };
 
+struct NodePairingResult {
+  bool success = false;
+  String message;
+  String aesKey;
+  String nodeId;
+  String gatewayHardwareId;
+};
+
 namespace ApiClient {
   bool provisionGateway(
     const String& apiBaseUrl,
@@ -17,5 +25,15 @@ namespace ApiClient {
     const String& token,
     const String& gatewayName,
     GatewayProvisionResult& out
+  );
+
+  bool pairNode(
+    const String& apiBaseUrl,
+    const String& jwtToken,
+    const String& gatewayHardwareId,
+    const String& nodeId,
+    const String& nodeName,
+    const String& nodeBleMac,
+    NodePairingResult& out
   );
 }

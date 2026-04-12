@@ -7,21 +7,27 @@
 #include "task_control.h"
 #include "lora_radio.h"
 #include "display_oled.h"
+#include "pairing_mode.h"
+#include "pairing_store.h"
+
+enum class BootMode {
+  PAIRING,
+  NORMAL
+};
+
+static BootMode gMode = BootMode::PAIRING;
 
 // =====================================================
-// setup
+// startNormalRuntime
 //
-// Boot sequence:
-//   1. initApp()  — hardware, I2C, LoRa, display
-//   2. Create mutexes and start FreeRTOS tasks
-//   3. ControlTask waits for gateway ACTIVATE frame
-//   4. On ACTIVATE: gNodeActive = true, ACTIVATE_OK sent
-//   5. Gateway then drives all further activity
+// Boot sequence in paired mode:
+//   1. initApp()  — hardware, I2C, display, LoRa
+//   2. Create mutexes
+//   3. Start FreeRTOS tasks
+//   4. ControlTask waits for gateway ACTIVATE frame
 // =====================================================
-void setup() {
-  Serial.begin(SERIAL_BAUD);
-  delay(300);
-  Serial.println("\n=== IoT Node — Gateway-commanded mode ===");
+static void startNormalRuntime() {
+  Serial.println("[BOOT] Paired configuration found → NORMAL mode");
 
   initApp();
 
@@ -39,7 +45,37 @@ void setup() {
   Serial.println("[SETUP] All tasks started — waiting for gateway ACTIVATE");
 }
 
+// =====================================================
+// setup
+// =====================================================
+void setup() {
+  Serial.begin(SERIAL_BAUD);
+  delay(300);
+  Serial.println("\n=== IoT Node — boot ===");
+
+  PairingStore::begin();
+
+  if (!PairingStore::hasPairing()) {
+    gMode = BootMode::PAIRING;
+    Serial.println("[BOOT] No pairing found → BLE PAIRING mode");
+    PairingMode::begin();
+    return;
+  }
+
+  gMode = BootMode::NORMAL;
+  startNormalRuntime();
+}
+
 void loop() {
-  // All work done in FreeRTOS tasks.
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  switch (gMode) {
+    case BootMode::PAIRING:
+      PairingMode::loop();
+      delay(20);
+      break;
+
+    case BootMode::NORMAL:
+      // All work done in FreeRTOS tasks.
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      break;
+  }
 }

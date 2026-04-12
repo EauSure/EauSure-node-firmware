@@ -17,8 +17,8 @@ namespace {
 
 class RxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
-    std::string value = c->getValue();
-    if (value.empty()) return;
+    String value = c->getValue();
+    if (value.length() == 0) return;
 
     StaticJsonDocument<384> doc;
     if (deserializeJson(doc, value)) {
@@ -30,10 +30,10 @@ class RxCallbacks : public BLECharacteristicCallbacks {
     }
 
     ProvisioningData d;
-    d.ssid = String((const char*)doc["ssid"] | "");
-    d.password = String((const char*)doc["password"] | "");
-    d.token = String((const char*)doc["token"] | "");
-    d.gatewayName = String((const char*)doc["gatewayName"] | "");
+    d.ssid = String(doc["ssid"] | "");
+    d.password = String(doc["password"] | "");
+    d.token = String(doc["token"] | "");
+    d.gatewayName = String(doc["gatewayName"] | "");
     d.valid = d.ssid.length() > 0 && d.password.length() > 0 && d.token.length() > 0;
 
     if (!d.valid) {

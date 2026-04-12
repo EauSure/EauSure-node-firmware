@@ -1,14 +1,14 @@
 #include "normal_mode.h"
 
 #include <LoRa.h>
-#include "../app_state.h"
-#include "../lora_radio.h"
-#include "../audio_alert.h"
-#include "../telemetry.h"
-#include "../wifi_manager.h"
-#include "../otaa_manager.h"
-#include "../provisioning_mode/wifi_store.h"
-#include "../api_client.h"
+#include "app_state.h"
+#include "lora_radio.h"
+#include "audio_alert.h"
+#include "telemetry.h"
+#include "wifi_manager.h"
+#include "otaa_manager.h"
+#include "wifi_store.h"
+#include "api_client.h"
 
 
 static String getGatewayHardwareIdString() {
