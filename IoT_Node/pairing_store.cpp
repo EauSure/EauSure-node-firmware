@@ -11,7 +11,10 @@ void PairingStore::begin() {
 }
 
 bool PairingStore::hasPairing() {
-  return prefs.getBool("valid", false);
+  return prefs.getBool("valid", false) &&
+         prefs.getString("gwId", "").length() > 0 &&
+         prefs.getString("nodeId", "").length() > 0 &&
+         prefs.getString("aes", "").length() == 32;
 }
 
 NodePairingData PairingStore::load() {

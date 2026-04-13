@@ -58,6 +58,20 @@ uint16_t crc16Ccitt(const uint8_t *data, size_t len);
 // Cryptography
 // =====================================================
 void buildNonce(uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]);
+// =====================================================
+// Global state
+// =====================================================
+extern uint32_t gTxSeq;
+extern uint32_t lastAcceptedSeq;
+
+// =====================================================
+// Runtime encryption key
+// =====================================================
+extern uint8_t gRuntimeEncKey[16];
+extern bool    gRuntimeEncKeyLoaded;
+
+bool loadRuntimeEncKey();
+bool parseHexKey16(const String& hex, uint8_t out[16]);
 
 bool aesgcmDecrypt(
   const uint8_t *cipher,
@@ -81,4 +95,4 @@ bool buildSecureFrame(
 // =====================================================
 // App init
 // =====================================================
-void initApp();
+bool initApp();

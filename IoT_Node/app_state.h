@@ -154,7 +154,7 @@ extern TaskHandle_t gSensorTaskHandle;
 // =====================================================
 // App init
 // =====================================================
-void initApp();
+bool initApp();
 
 // =====================================================
 // Low-level I2C / MPU
@@ -208,6 +208,16 @@ uint32_t readU32BE(const uint8_t *src);
 // CRC-16 CCITT
 // =====================================================
 uint16_t crc16Ccitt(const uint8_t *data, size_t len);
+
+
+// =====================================================
+// Runtime encryption key
+// =====================================================
+extern uint8_t gRuntimeEncKey[16];
+extern bool    gRuntimeEncKeyLoaded;
+
+bool loadRuntimeEncKey();
+bool parseHexKey16(const String& hex, uint8_t out[16]);
 
 // =====================================================
 // Cryptography helpers (used by lora_radio.cpp)

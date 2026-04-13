@@ -22,7 +22,10 @@ namespace NormalMode {
 
 void begin() {
   Serial.println("[NORMAL] Starting gateway normal mode...");
-  initApp();
+  if (!initApp()) {
+    Serial.println("[FATAL] initApp failed - runtime AES key not available");
+    while (true) delay(100);
+  }
 
   ProvisioningData prov = WifiStore::load();
   if (!prov.valid) {

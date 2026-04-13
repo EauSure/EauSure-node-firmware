@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
+
 struct GatewayProvisionResult {
   bool success = false;
   String message;
@@ -18,6 +19,9 @@ struct NodePairingResult {
 };
 
 namespace ApiClient {
+
+    bool healthCheck(const String& apiBaseUrl);
+
   bool provisionGateway(
     const String& apiBaseUrl,
     const String& gatewayHardwareId,

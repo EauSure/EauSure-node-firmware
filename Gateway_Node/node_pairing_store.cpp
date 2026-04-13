@@ -15,7 +15,7 @@ void begin() {
 bool hasPairing() {
   return prefs.getBool("valid", false) &&
          prefs.getString("nodeId", "").length() > 0 &&
-         prefs.getString("aes", "").length() > 0 &&
+         prefs.getString("aes", "").length() == 32 &&
          prefs.getString("gwId", "").length() > 0;
 }
 

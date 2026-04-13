@@ -16,6 +16,15 @@ static String getNodeIdString() {
   return "7CB597E9"; // replace later with real DEVICE_ID helper
 }
 
+class PairServerCallbacks : public BLEServerCallbacks {
+  void onDisconnect(BLEServer* server) override {
+    if (!gComplete) {
+      Serial.println("[PAIRING] Client disconnected — restarting advertising");
+      BLEDevice::startAdvertising();
+    }
+  }
+};
+
 class PairRxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
     String value = c->getValue();
@@ -56,18 +65,22 @@ class PairRxCallbacks : public BLECharacteristicCallbacks {
 };
 
 void PairingMode::begin() {
-  BLEDevice::init(("IOT-" + getNodeIdString()).c_str());
+  String devName = "IOT-" + getNodeIdString();
+
+  BLEDevice::init(devName.c_str());
 
   BLEServer* server = BLEDevice::createServer();
-  BLEService* service = server->createService(SERVICE_UUID);
+  server->setCallbacks(new PairServerCallbacks());  // restart adv on disconnect
+
+  BLEService* service = server->createService(BLEUUID(SERVICE_UUID));
 
   BLECharacteristic* rx = service->createCharacteristic(
-    RX_UUID,
+    BLEUUID(RX_UUID),
     BLECharacteristic::PROPERTY_WRITE
   );
 
   gTx = service->createCharacteristic(
-    TX_UUID,
+    BLEUUID(TX_UUID),
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
   );
 
@@ -78,17 +91,31 @@ void PairingMode::begin() {
   doc["nodeName"] = "iot-node";
   doc["nodeType"] = "water-quality";
 
-  String adv;
-  serializeJson(doc, adv);
-  gTx->setValue(adv.c_str());
+  String advValue;
+  serializeJson(doc, advValue);
+  gTx->setValue(advValue.c_str());
 
   service->start();
 
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  advertising->start();
+  advertising->stop();
+  advertising->addServiceUUID(BLEUUID(SERVICE_UUID));
+  advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
 
-  Serial.println("[PAIRING] IoT node BLE pairing mode started");
+  BLEAdvertisementData advData;
+  advData.setCompleteServices(BLEUUID(SERVICE_UUID));
+  advertising->setAdvertisementData(advData);
+
+  BLEAdvertisementData scanResp;
+  scanResp.setName(devName.c_str());
+  advertising->setScanResponseData(scanResp);
+
+  BLEDevice::startAdvertising();
+
+  Serial.printf("[PAIRING] Advertising as '%s'\n", devName.c_str());
+  Serial.printf("[PAIRING] Service UUID: %s\n", SERVICE_UUID);
 }
 
 void PairingMode::loop() {

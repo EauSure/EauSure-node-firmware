@@ -29,7 +29,10 @@ static BootMode gMode = BootMode::PAIRING;
 static void startNormalRuntime() {
   Serial.println("[BOOT] Paired configuration found → NORMAL mode");
 
-  initApp();
+  if (!initApp()) {
+  Serial.println("[BOOT] initApp failed");
+  while (true) delay(100);
+}
 
   gDataMutex = xSemaphoreCreateMutex();
   gI2CMutex  = xSemaphoreCreateMutex();

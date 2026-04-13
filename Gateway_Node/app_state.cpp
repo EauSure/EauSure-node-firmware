@@ -1,11 +1,14 @@
-//gateway_node/app_state.cpp
 #include "app_state.h"
+#include "node_pairing_store.h"
 
 // =====================================================
 // Global State
 // =====================================================
 uint32_t lastAcceptedSeq = 0;
 uint32_t gTxSeq = 1;
+
+uint8_t gRuntimeEncKey[16] = {0};
+bool    gRuntimeEncKeyLoaded = false;
 
 // =====================================================
 // Helper Functions - Binary Encoding/Decoding
@@ -48,6 +51,49 @@ uint16_t crc16Ccitt(const uint8_t *data, size_t len) {
   return crc;
 }
 
+bool parseHexKey16(const String& hex, uint8_t out[16]) {
+  if (hex.length() != 32) return false;
+
+  for (int i = 0; i < 16; i++) {
+    char hi = hex[i * 2];
+    char lo = hex[i * 2 + 1];
+
+    auto hexVal = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+      if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+      return -1;
+    };
+
+    int h = hexVal(hi);
+    int l = hexVal(lo);
+    if (h < 0 || l < 0) return false;
+
+    out[i] = (uint8_t)((h << 4) | l);
+  }
+
+  return true;
+}
+
+bool loadRuntimeEncKey() {
+  NodePairingData p = NodePairingStore::load();
+  if (!p.valid) {
+    Serial.println("[KEY] No valid node pairing found");
+    gRuntimeEncKeyLoaded = false;
+    return false;
+  }
+
+  if (!parseHexKey16(p.aesKeyHex, gRuntimeEncKey)) {
+    Serial.println("[KEY] Invalid AES key in node pairing store");
+    gRuntimeEncKeyLoaded = false;
+    return false;
+  }
+
+  gRuntimeEncKeyLoaded = true;
+  Serial.println("[KEY] Runtime AES key loaded from node pairing store");
+  return true;
+}
+
 // =====================================================
 // Build Nonce for GCM
 // =====================================================
@@ -75,7 +121,12 @@ bool aesgcmDecrypt(
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
 
-  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, ENC_KEY, 128) != 0) {
+  if (!gRuntimeEncKeyLoaded) {
+    mbedtls_gcm_free(&gcm);
+    return false;
+  }
+
+  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, gRuntimeEncKey, 128) != 0) {
     mbedtls_gcm_free(&gcm);
     return false;
   }
@@ -110,7 +161,6 @@ bool buildSecureFrame(
   uint8_t nonce[GCM_NONCE_LEN];
   buildNonce(seq, nonce);
 
-  // Build header (unencrypted, authenticated as AAD)
   size_t pos = 0;
   outFrame[pos++] = PROTO_VERSION;
   outFrame[pos++] = msgType;
@@ -121,13 +171,17 @@ bool buildSecureFrame(
 
   uint8_t *ciphertext = &outFrame[pos];
   uint8_t tag[GCM_TAG_LEN];
-  
   size_t aadLen = pos;
 
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
 
-  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, ENC_KEY, 128) != 0) {
+  if (!gRuntimeEncKeyLoaded) {
+    mbedtls_gcm_free(&gcm);
+    return false;
+  }
+
+  if (mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, gRuntimeEncKey, 128) != 0) {
     mbedtls_gcm_free(&gcm);
     return false;
   }
@@ -148,11 +202,10 @@ bool buildSecureFrame(
   );
 
   mbedtls_gcm_free(&gcm);
-  
+
   if (rc != 0) return false;
 
   pos += plainLen;
-
   memcpy(&outFrame[pos], tag, GCM_TAG_LEN);
   pos += GCM_TAG_LEN;
 
@@ -167,8 +220,15 @@ bool buildSecureFrame(
 // =====================================================
 // Application Init
 // =====================================================
-void initApp() {
+bool initApp() {
   Serial.begin(SERIAL_BAUD);
   delay(300);
   Serial.println("\n=== Gateway Node - FreeRTOS Water Quality Monitor ===");
+
+  if (!loadRuntimeEncKey()) {
+    Serial.println("[INIT] ERROR: runtime AES key not available");
+    return false;
+  }
+
+  return true;
 }
