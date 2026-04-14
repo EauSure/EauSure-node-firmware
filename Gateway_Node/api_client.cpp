@@ -1,4 +1,5 @@
 #include "api_client.h"
+#include "config.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
@@ -89,6 +90,9 @@ static int httpsPost(const String& url, const String& body, String& responseOut,
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Connection", "close");
   if (includeGatewayApiKey) {
+#if !defined(API_KEY)
+#error "API_KEY must be defined in Gateway_Node/config.h for authenticated firmware API routes"
+#endif
     http.addHeader("X-Gateway-Key", API_KEY);
   }
 

@@ -152,6 +152,12 @@ static bool waitForAck(uint8_t expectedCmdType, uint32_t seq, uint32_t timeoutMs
   uint8_t  buf[MAX_FRAME_LEN];
   size_t   len   = 0;
   uint32_t start = millis();
+  uint32_t pairedNodeId = getPairedNodeDeviceId();
+
+  if (pairedNodeId == 0) {
+    Serial.println("[GW ACK WAIT] paired node ID unavailable");
+    return false;
+  }
 
   while ((millis() - start) < timeoutMs) {
     uint32_t remaining = timeoutMs - (millis() - start);
@@ -210,7 +216,7 @@ static bool waitForAck(uint8_t expectedCmdType, uint32_t seq, uint32_t timeoutMs
 
     uint32_t deviceId = readU32BE(&buf[2]);
     uint32_t rxSeq    = readU32BE(&buf[6]);
-    if (deviceId != DEVICE_ID || rxSeq != seq) continue;
+    if (deviceId != pairedNodeId || rxSeq != seq) continue;
 
     uint16_t cipherLen = readU16BE(&buf[10 + GCM_NONCE_LEN]);
     if (cipherLen != 0) continue;
@@ -325,6 +331,12 @@ bool sendHeartbeatReq() {
 static bool parseGenericFrame(const uint8_t *frame, size_t frameLen,
                                uint8_t &typeOut, uint32_t &seqOut,
                                uint8_t *plainOut, uint16_t &plainLenOut) {
+  uint32_t pairedNodeId = getPairedNodeDeviceId();
+  if (pairedNodeId == 0) {
+    Serial.println("[GW RX] paired node ID unavailable");
+    return false;
+  }
+
   if (frameLen < HEADER_LEN + GCM_TAG_LEN + CRC_LEN) {
     Serial.println("[GW RX] frame too short");
     return false;
@@ -342,7 +354,7 @@ static bool parseGenericFrame(const uint8_t *frame, size_t frameLen,
   uint16_t cipherLen   = readU16BE(&frame[10 + GCM_NONCE_LEN]);
 
   if (version != PROTO_VERSION) { Serial.println("[GW RX] version mismatch"); return false; }
-  if (deviceId != DEVICE_ID) {
+  if (deviceId != pairedNodeId) {
     Serial.printf("[GW RX] deviceId mismatch: 0x%08lX\n", (unsigned long)deviceId);
     return false;
   }

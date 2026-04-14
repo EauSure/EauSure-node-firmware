@@ -67,13 +67,13 @@ String getGatewayHardwareIdString() {
 }
 
 String makeNonceHex(size_t numBytes) {
-  static const char* HEX = "0123456789abcdef";
+  static const char* kHexChars = "0123456789abcdef";
   String out;
   out.reserve(numBytes * 2);
   for (size_t i = 0; i < numBytes; ++i) {
     uint8_t value = static_cast<uint8_t>(esp_random() & 0xFF);
-    out += HEX[(value >> 4) & 0x0F];
-    out += HEX[value & 0x0F];
+    out += kHexChars[(value >> 4) & 0x0F];
+    out += kHexChars[value & 0x0F];
   }
   return out;
 }
@@ -171,10 +171,46 @@ bool connectToWifi(const String& ssid, const String& password, uint32_t timeoutM
   return true;
 }
 
+void logNodeApScanResult(const String& expectedSsid) {
+  if (expectedSsid.isEmpty()) return;
+
+  Serial.printf("[PAIRING][WIFI] Scanning for AP '%s' before connect...\n", expectedSsid.c_str());
+  int count = WiFi.scanNetworks(false, true);
+  if (count <= 0) {
+    Serial.println("[PAIRING][WIFI] No APs found during diagnostic scan");
+    WiFi.scanDelete();
+    return;
+  }
+
+  bool found = false;
+  for (int i = 0; i < count; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (ssid == expectedSsid) {
+      found = true;
+      Serial.printf("[PAIRING][WIFI] Found target AP ssid=%s bssid=%s rssi=%d channel=%d\n",
+                    ssid.c_str(),
+                    WiFi.BSSIDstr(i).c_str(),
+                    WiFi.RSSI(i),
+                    WiFi.channel(i));
+    }
+  }
+
+  if (!found) {
+    Serial.printf("[PAIRING][WIFI] Target AP '%s' not visible in scan\n", expectedSsid.c_str());
+  }
+
+  WiFi.scanDelete();
+}
+
 bool connectToNodeAp() {
   if (gTargetSsid.isEmpty() || gNodeApPassword.isEmpty()) return false;
   gPauseMqtt = true;
-  return connectToWifi(gTargetSsid, gNodeApPassword, WIFI_TIMEOUT_MS + 5000, "node AP");
+  delay(300);
+  bool ok = connectToWifi(gTargetSsid, gNodeApPassword, WIFI_TIMEOUT_MS + 5000, "node AP");
+  if (!ok) {
+    logNodeApScanResult(gTargetSsid);
+  }
+  return ok;
 }
 
 bool reconnectHomeWifi() {
@@ -355,6 +391,11 @@ bool sendProvisionToNode() {
 
     String body;
     serializeJson(req, body);
+
+    Serial.println("[PAIRING][DEBUG] Provision payload about to be sent to node:");
+    Serial.printf("[PAIRING][DEBUG]   wifiSsid=%s\n", prov.ssid.c_str());
+    Serial.printf("[PAIRING][DEBUG]   wifiPassword=%s\n", prov.password.c_str());
+    Serial.printf("[PAIRING][DEBUG]   nodeId=%s\n", gTargetNodeId.c_str());
 
     if (!http.begin(String(NODE_AP_BASE_URL) + "/provision")) {
       errorMessage = "provision begin failed";

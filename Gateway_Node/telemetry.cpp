@@ -4,8 +4,13 @@
 #include "config.h"
 
 static String getNodeIdString() {
+  uint32_t nodeId = getPairedNodeDeviceId();
+  if (nodeId == 0) {
+    return String("unpaired");
+  }
+
   char buf[11];
-  snprintf(buf, sizeof(buf), "0x%08lX", (unsigned long)DEVICE_ID);
+  snprintf(buf, sizeof(buf), "0x%08lX", (unsigned long)nodeId);
   return String(buf);
 }
 

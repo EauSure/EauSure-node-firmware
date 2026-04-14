@@ -57,7 +57,7 @@ uint16_t crc16Ccitt(const uint8_t *data, size_t len);
 // =====================================================
 // Cryptography
 // =====================================================
-void buildNonce(uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]);
+void buildNonce(uint32_t deviceId, uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]);
 // =====================================================
 // Global state
 // =====================================================
@@ -72,6 +72,7 @@ extern bool    gRuntimeEncKeyLoaded;
 
 bool loadRuntimeEncKey();
 bool parseHexKey16(const String& hex, uint8_t out[16]);
+uint32_t getPairedNodeDeviceId();
 
 bool aesgcmDecrypt(
   const uint8_t *cipher,

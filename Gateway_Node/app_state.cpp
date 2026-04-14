@@ -94,11 +94,28 @@ bool loadRuntimeEncKey() {
   return true;
 }
 
+uint32_t getPairedNodeDeviceId() {
+  NodePairingData p = NodePairingStore::load();
+  if (!p.valid || p.nodeId.isEmpty()) {
+    Serial.println("[PAIRING] No paired node ID available");
+    return 0;
+  }
+
+  char* endPtr = nullptr;
+  unsigned long parsed = strtoul(p.nodeId.c_str(), &endPtr, 16);
+  if (endPtr == nullptr || *endPtr != '\0') {
+    Serial.printf("[PAIRING] Invalid paired node ID: %s\n", p.nodeId.c_str());
+    return 0;
+  }
+
+  return static_cast<uint32_t>(parsed);
+}
+
 // =====================================================
 // Build Nonce for GCM
 // =====================================================
-void buildNonce(uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]) {
-  writeU32BE(&nonce[0], DEVICE_ID);
+void buildNonce(uint32_t deviceId, uint32_t seq, uint8_t nonce[GCM_NONCE_LEN]) {
+  writeU32BE(&nonce[0], deviceId);
   writeU32BE(&nonce[4], seq);
   nonce[8]  = random(0, 256);
   nonce[9]  = random(0, 256);
@@ -157,14 +174,19 @@ bool buildSecureFrame(
   size_t &outLen
 ) {
   if (plainLen > MAX_PLAIN_LEN) return false;
+  uint32_t pairedNodeId = getPairedNodeDeviceId();
+  if (pairedNodeId == 0) {
+    Serial.println("[SECURE FRAME] Refusing to build frame without a valid paired node ID");
+    return false;
+  }
 
   uint8_t nonce[GCM_NONCE_LEN];
-  buildNonce(seq, nonce);
+  buildNonce(pairedNodeId, seq, nonce);
 
   size_t pos = 0;
   outFrame[pos++] = PROTO_VERSION;
   outFrame[pos++] = msgType;
-  writeU32BE(&outFrame[pos], DEVICE_ID); pos += 4;
+  writeU32BE(&outFrame[pos], pairedNodeId); pos += 4;
   writeU32BE(&outFrame[pos], seq);       pos += 4;
   memcpy(&outFrame[pos], nonce, GCM_NONCE_LEN); pos += GCM_NONCE_LEN;
   writeU16BE(&outFrame[pos], plainLen);  pos += 2;
@@ -227,6 +249,11 @@ bool initApp() {
 
   if (!loadRuntimeEncKey()) {
     Serial.println("[INIT] ERROR: runtime AES key not available");
+    return false;
+  }
+
+  if (getPairedNodeDeviceId() == 0) {
+    Serial.println("[INIT] ERROR: paired node ID not available");
     return false;
   }
 

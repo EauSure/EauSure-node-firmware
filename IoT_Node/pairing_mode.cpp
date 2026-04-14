@@ -15,6 +15,8 @@
 namespace {
 WebServer gServer(80);
 bool gComplete = false;
+bool gProvisionPending = false;
+bool gProvisionInProgress = false;
 String gApSsid = "";
 String gApPassword = "";
 String gStatusTitle = "PAIRING";
@@ -31,6 +33,36 @@ struct PairingProvisionPacket {
   String pairingToken;
   bool valid = false;
 };
+
+PairingProvisionPacket gPendingProvisionPacket;
+
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_AP_START:
+      Serial.println("[PAIRING][WIFI] SoftAP started");
+      break;
+    case ARDUINO_EVENT_WIFI_AP_STOP:
+      Serial.println("[PAIRING][WIFI] SoftAP stopped");
+      break;
+    case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
+      Serial.printf("[PAIRING][WIFI] STA connected to SoftAP aid=%u\n", info.wifi_ap_staconnected.aid);
+      break;
+    case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
+      Serial.printf("[PAIRING][WIFI] STA disconnected from SoftAP aid=%u\n", info.wifi_ap_stadisconnected.aid);
+      break;
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      Serial.println("[PAIRING][WIFI] Node STA connected to upstream WiFi");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.printf("[PAIRING][WIFI] Node STA disconnected reason=%d\n", info.wifi_sta_disconnected.reason);
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.printf("[PAIRING][WIFI] Node STA got IP %s\n", WiFi.localIP().toString().c_str());
+      break;
+    default:
+      break;
+  }
+}
 
 String getNodeIdString() {
   char buf[9];
@@ -65,12 +97,12 @@ String hmacSha256Hex(const String& key, const String& message) {
   mbedtls_md_hmac_finish(&ctx, out);
   mbedtls_md_free(&ctx);
 
-  static const char* HEX = "0123456789abcdef";
+  static const char* kHexChars = "0123456789abcdef";
   String hex;
   hex.reserve(64);
   for (size_t i = 0; i < sizeof(out); ++i) {
-    hex += HEX[(out[i] >> 4) & 0x0F];
-    hex += HEX[out[i] & 0x0F];
+    hex += kHexChars[(out[i] >> 4) & 0x0F];
+    hex += kHexChars[out[i] & 0x0F];
   }
   return hex;
 }
@@ -128,9 +160,18 @@ bool parseProvisionPacket(const String& value, PairingProvisionPacket& out) {
   return out.valid;
 }
 
+void stopPairingApForProvisioning() {
+  Serial.println("[PAIRING] Stopping SoftAP before home WiFi join");
+  gServer.stop();
+  WiFi.softAPdisconnect(true);
+  delay(150);
+}
+
 bool connectWifiForPairing(const String& ssid, const String& password, String& errorOut) {
   errorOut = "";
-  WiFi.mode(WIFI_AP_STA);
+  Serial.printf("[PAIRING] Connecting node STA to home WiFi SSID=%s\n", ssid.c_str());
+  stopPairingApForProvisioning();
+  WiFi.mode(WIFI_STA);
   WiFi.disconnect(false, true);
   delay(200);
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -143,10 +184,12 @@ bool connectWifiForPairing(const String& ssid, const String& password, String& e
 
   if (WiFi.status() != WL_CONNECTED) {
     errorOut = "WiFi connect failed";
+    Serial.printf("[PAIRING] Home WiFi connection failed for SSID=%s\n", ssid.c_str());
     renderPairingScreen("PAIRING", "WiFi failed", ssid, "Retry from gateway");
     return false;
   }
 
+  Serial.printf("[PAIRING] Home WiFi connected IP=%s\n", WiFi.localIP().toString().c_str());
   renderPairingScreen("PAIRING", "Home WiFi connected", WiFi.localIP().toString(), "Requesting key...");
   return true;
 }
@@ -156,7 +199,7 @@ void disconnectStationAfterPairing() {
     WiFi.disconnect(false, true);
     delay(100);
   }
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_OFF);
 }
 
 bool callPairNodeApi(
@@ -188,6 +231,7 @@ bool callPairNodeApi(
 
   String body;
   serializeJson(req, body);
+  Serial.printf("[PAIRING][API] POST %s\n", url.c_str());
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -210,6 +254,10 @@ bool callPairNodeApi(
 
   int code = http.POST(body);
   String response = (code > 0) ? http.getString() : "";
+  Serial.printf("[PAIRING][API] pair-node code=%d\n", code);
+  if (!response.isEmpty()) {
+    Serial.printf("[PAIRING][API] pair-node response=%s\n", response.c_str());
+  }
 
   if (code <= 0) {
     errorOut = "HTTP POST failed (code=" + String(code) + ")";
@@ -281,7 +329,7 @@ bool performProvisioningFlow(const PairingProvisionPacket& packet, String& error
   d.valid = true;
   d.gatewayHardwareId = gatewayHardwareId;
   d.nodeId = nodeId;
-  d.nodeName = "iot-node";
+  d.nodeName = NODE_DEVICE_NAME;
   d.aesKeyHex = aesKey;
 
   if (!PairingStore::save(d)) {
@@ -295,13 +343,14 @@ bool performProvisioningFlow(const PairingProvisionPacket& packet, String& error
 }
 
 void handleIdentity() {
+  Serial.println("[PAIRING] /identity requested");
   renderPairingScreen("PAIRING AP", "Gateway probing", getNodeIdString(), "Await proof");
 
   StaticJsonDocument<256> doc;
   doc["success"] = true;
   JsonObject data = doc.createNestedObject("data");
   data["nodeId"] = getNodeIdString();
-  data["nodeName"] = "iot-node";
+  data["nodeName"] = NODE_DEVICE_NAME;
   data["mode"] = "PAIRING_AP";
 
   String payload;
@@ -310,6 +359,7 @@ void handleIdentity() {
 }
 
 void handleProve() {
+  Serial.println("[PAIRING] /prove requested");
   StaticJsonDocument<256> doc;
   if (deserializeJson(doc, gServer.arg("plain")) != DeserializationError::Ok) {
     gServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
@@ -337,33 +387,42 @@ void handleProve() {
 }
 
 void handleProvision() {
+  Serial.println("[PAIRING] /provision requested");
   PairingProvisionPacket packet;
   if (!parseProvisionPacket(gServer.arg("plain"), packet)) {
     gServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON or missing fields\"}");
     return;
   }
 
-  renderPairingScreen("PAIRING AP", "Provision request", packet.wifiSsid, "Contacting API");
+  Serial.println("[PAIRING][DEBUG] Provision payload received from gateway:");
+  Serial.printf("[PAIRING][DEBUG]   wifiSsid=%s\n", packet.wifiSsid.c_str());
+  Serial.printf("[PAIRING][DEBUG]   wifiPassword=%s\n", packet.wifiPassword.c_str());
+  Serial.printf("[PAIRING][DEBUG]   gatewayHardwareId=%s\n", packet.gatewayHardwareId.c_str());
+  Serial.printf("[PAIRING][DEBUG]   nodeId=%s\n", packet.nodeId.c_str());
 
-  String error;
-  if (!performProvisioningFlow(packet, error)) {
+  if (gProvisionInProgress || gProvisionPending) {
     StaticJsonDocument<256> resp;
     resp["success"] = false;
-    resp["message"] = error;
+    resp["message"] = "Provisioning already in progress";
     String payload;
     serializeJson(resp, payload);
-    renderPairingScreen("PAIRING AP", "Provision failed", error, "Waiting retry");
-    gServer.send(500, "application/json", payload);
+    gServer.send(409, "application/json", payload);
     return;
   }
 
+  gPendingProvisionPacket = packet;
+  gProvisionPending = true;
+  Serial.printf("[PAIRING] Provision accepted for SSID=%s gateway=%s\n",
+                packet.wifiSsid.c_str(),
+                packet.gatewayHardwareId.c_str());
+  renderPairingScreen("PAIRING AP", "Provision accepted", packet.wifiSsid, "Starting...");
+
   StaticJsonDocument<256> resp;
   resp["success"] = true;
-  resp["message"] = "Node provisioned";
+  resp["message"] = "Provisioning accepted";
   String payload;
   serializeJson(resp, payload);
-  gServer.send(200, "application/json", payload);
-  gComplete = true;
+  gServer.send(202, "application/json", payload);
 }
 
 void startPairingAp() {
@@ -396,6 +455,9 @@ namespace PairingMode {
 
 void begin() {
   gComplete = false;
+  gProvisionPending = false;
+  gProvisionInProgress = false;
+  WiFi.onEvent(onWiFiEvent);
   Wire.begin(I2C_SDA, I2C_SCL);
   displayInit();
   renderPairingScreen("PAIRING AP", "Starting WiFi AP", getNodeIdString(), "Please wait...");
@@ -412,6 +474,25 @@ void begin() {
 
 void loop() {
   gServer.handleClient();
+
+  if (gProvisionPending && !gProvisionInProgress) {
+    gProvisionPending = false;
+    gProvisionInProgress = true;
+    Serial.println("[PAIRING] Starting asynchronous provisioning flow");
+
+    renderPairingScreen("PAIRING AP", "Joining home WiFi", gPendingProvisionPacket.wifiSsid, "Please wait...");
+
+    String error;
+    if (!performProvisioningFlow(gPendingProvisionPacket, error)) {
+      Serial.printf("[PAIRING] Provisioning failed: %s\n", error.c_str());
+      renderPairingScreen("PAIRING AP", "Provision failed", error, "Waiting retry");
+      gProvisionInProgress = false;
+      startPairingAp();
+    } else {
+      Serial.println("[PAIRING] Provisioning complete");
+      gComplete = true;
+    }
+  }
 
   if (gComplete) {
     Serial.println("[PAIRING] Pairing complete, restarting...");
