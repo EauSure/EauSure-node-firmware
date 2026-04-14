@@ -1,43 +1,39 @@
 #pragma once
 #include <Arduino.h>
 
-
 struct GatewayProvisionResult {
   bool success = false;
+  int httpCode = 0;
   String message;
   String gatewayId;
   String name;
   String mqttTopic;
 };
 
-struct NodePairingResult {
+struct ApiBasicResult {
   bool success = false;
+  int httpCode = 0;
   String message;
-  String aesKey;
-  String nodeId;
-  String gatewayHardwareId;
 };
 
 namespace ApiClient {
 
-    bool healthCheck(const String& apiBaseUrl);
+bool healthCheck(const String& apiBaseUrl);
 
-  bool provisionGateway(
-    const String& apiBaseUrl,
-    const String& gatewayHardwareId,
-    const String& firmwareVersion,
-    const String& token,
-    const String& gatewayName,
-    GatewayProvisionResult& out
-  );
+bool provisionGateway(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  const String& firmwareVersion,
+  const String& token,
+  const String& gatewayName,
+  GatewayProvisionResult& out
+);
 
-  bool pairNode(
-    const String& apiBaseUrl,
-    const String& jwtToken,
-    const String& gatewayHardwareId,
-    const String& nodeId,
-    const String& nodeName,
-    const String& nodeBleMac,
-    NodePairingResult& out
-  );
-}
+bool rollbackPairNode(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  const String& pairingToken,
+  ApiBasicResult& out
+);
+
+} // namespace ApiClient
