@@ -60,7 +60,7 @@ void setup() {
 
   if (!PairingStore::hasPairing()) {
     gMode = BootMode::PAIRING;
-    Serial.println("[BOOT] No pairing found → BLE PAIRING mode");
+    Serial.println("[BOOT] No pairing found -> WIFI PAIRING AP mode");
     PairingMode::begin();
     return;
   }

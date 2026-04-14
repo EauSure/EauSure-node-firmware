@@ -5,27 +5,25 @@
 #include "api_client.h"
 #include "config.h"
 
-#include <NimBLEDevice.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <esp_system.h>
 
-static const char* SERVICE_UUID = "22345678-1234-1234-1234-1234567890ab";
-static const char* RX_UUID      = "22345678-1234-1234-1234-1234567890ac";
-static const char* TX_UUID      = "22345678-1234-1234-1234-1234567890ad";
-
-static const uint32_t SCAN_SECONDS           = 4;
-static const uint32_t BLE_RESULT_TIMEOUT_MS  = 20000;
-static const uint32_t API_ROLLBACK_RETRY_MS  = 2000;
+static const uint32_t WAIT_KEY_TIMEOUT_MS = 30000;
+static const uint32_t API_ROLLBACK_RETRY_MS = 2000;
+static const char* NODE_AP_PREFIX = "IOT-";
+static const char* NODE_AP_BASE_URL = "http://192.168.4.1";
 
 namespace {
 
 enum class PairState {
   IDLE,
   SCANNING,
-  CONNECTING,
-  DISCOVERING,
   WAITING_CONFIRMATION,
-  WRITE_PACKET,
-  WAIT_NODE_RESULT,
+  FETCHING_PROOF,
+  VERIFYING_PROOF,
+  SENDING_PROVISION,
   WAIT_KEY_READY,
   SAVE_LOCAL,
   COMPLETE,
@@ -34,39 +32,30 @@ enum class PairState {
 };
 
 PairState gState = PairState::IDLE;
+bool gComplete = false;
+bool gBusy = false;
+bool gGatewayProvisioned = false;
+bool gConfirmationPending = false;
+bool gRollbackNeeded = false;
+bool gPauseMqtt = false;
 
-bool gComplete             = false;
-bool gBusy                 = false;
-bool gBleInitialized       = false;
-bool gGatewayProvisioned   = false;
-bool gConfirmationPending  = false;
-bool gBleWriteDone         = false;
-bool gNodeReportedSuccess  = false;
-bool gNodeReportedFailure  = false;
-bool gRollbackNeeded       = false;
-bool gScanInProgress       = false;
-bool gStopScanRequested    = false;
-bool gClientConnected      = false;
-bool gNotificationReceived = false;
-
-NimBLEAdvertisedDevice* gFoundDevice = nullptr;
-NimBLEClient* gClient = nullptr;
-NimBLERemoteCharacteristic* gTxChar = nullptr;
-NimBLERemoteCharacteristic* gRxChar = nullptr;
-
+String gFoundSsid = "";
 String gFoundBleMac = "";
 String gFoundName = "";
 String gFoundNodeId = "";
-
-String gTargetNodeId = "";
+String gTargetSsid = "";
 String gTargetBleMac = "";
+String gTargetNodeId = "";
+String gPendingSessionId = "";
+String gNodeApPassword = "";
 String gPendingPairingToken = "";
 String gReceivedAesKey = "";
-String gNodeResultMessage = "";
+String gChallengeNonce = "";
+String gChallengeProof = "";
 
 GatewayProvisionResult gProvisionResult;
+PairingTokenResult gPairingTokenResult;
 ApiBasicResult gRollbackResult;
-
 uint32_t gStateAtMs = 0;
 uint32_t gRetryAtMs = 0;
 
@@ -77,60 +66,37 @@ String getGatewayHardwareIdString() {
   return mac;
 }
 
-void resetCandidate() {
-  if (gFoundDevice) {
-    delete gFoundDevice;
-    gFoundDevice = nullptr;
+String makeNonceHex(size_t numBytes) {
+  static const char* HEX = "0123456789abcdef";
+  String out;
+  out.reserve(numBytes * 2);
+  for (size_t i = 0; i < numBytes; ++i) {
+    uint8_t value = static_cast<uint8_t>(esp_random() & 0xFF);
+    out += HEX[(value >> 4) & 0x0F];
+    out += HEX[value & 0x0F];
   }
+  return out;
+}
+
+void resetCandidate() {
+  gFoundSsid = "";
   gFoundBleMac = "";
   gFoundName = "";
   gFoundNodeId = "";
 }
 
-void clearCharacteristicCache() {
-  gTxChar = nullptr;
-  gRxChar = nullptr;
-}
-
-void cleanupClient(bool keepBleStack = true) {
-  clearCharacteristicCache();
-  gClientConnected = false;
-  gNotificationReceived = false;
-
-  if (gClient) {
-    if (gClient->isConnected()) {
-      gClient->disconnect();
-      delay(30);
-    }
-    NimBLEDevice::deleteClient(gClient);
-    gClient = nullptr;
-  }
-
-  if (!keepBleStack) {
-    gBleInitialized = false;
-  }
-}
-
-void resetScan() {
-  NimBLEScan* scan = NimBLEDevice::getScan();
-  if (scan) {
-    scan->stop();
-    scan->clearResults();
-  }
-  gScanInProgress = false;
-  gStopScanRequested = false;
-}
-
 void resetPendingConfirmationState() {
   gConfirmationPending = false;
-  gBleWriteDone = false;
-  gNodeReportedSuccess = false;
-  gNodeReportedFailure = false;
   gRollbackNeeded = false;
+  gTargetSsid = "";
+  gTargetBleMac = "";
+  gTargetNodeId = "";
+  gPendingSessionId = "";
+  gNodeApPassword = "";
   gPendingPairingToken = "";
   gReceivedAesKey = "";
-  gNodeResultMessage = "";
-  gNotificationReceived = false;
+  gChallengeNonce = "";
+  gChallengeProof = "";
 }
 
 void fatalError(const String& reason) {
@@ -138,24 +104,22 @@ void fatalError(const String& reason) {
   Serial.printf("[PAIRING][FATAL] %s\n", reason.c_str());
   Serial.println("[PAIRING][FATAL] Pairing halted. Please fix the issue and reboot the gateway.");
   Serial.println("[PAIRING][FATAL] =============================\n");
-
-  resetScan();
-  cleanupClient();
+  gPauseMqtt = false;
   resetCandidate();
   resetPendingConfirmationState();
   gState = PairState::FATAL_ERROR;
   gStateAtMs = millis();
 }
 
-bool ensureWifiReady() {
+bool ensureHomeWifiReady() {
+  gPauseMqtt = false;
   if (WiFiManager::isConnected()) return true;
   return WiFiManager::reconnect();
 }
 
 bool ensureGatewayProvisioned(const ProvisioningData& prov) {
   if (gGatewayProvisioned) return true;
-
-  if (!ensureWifiReady()) {
+  if (!ensureHomeWifiReady()) {
     gProvisionResult = GatewayProvisionResult{};
     gProvisionResult.message = "WiFi not ready";
     return false;
@@ -172,28 +136,273 @@ bool ensureGatewayProvisioned(const ProvisioningData& prov) {
     API_BASE_URL,
     gatewayHardwareId,
     GATEWAY_FIRMWARE_VERSION,
+    GATEWAY_DEVICE_SECRET,
     prov.token,
     prov.gatewayName,
     gProvisionResult
   );
 
   if (!ok) return false;
-
   gGatewayProvisioned = true;
   return true;
 }
 
-bool rollbackPendingPairing() {
-  if (!gRollbackNeeded || gPendingPairingToken.isEmpty()) return true;
-  if (!ensureWifiReady()) return false;
+bool connectToWifi(const String& ssid, const String& password, uint32_t timeoutMs, const String& label) {
+  WiFi.disconnect(true, true);
+  delay(200);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str(), password.c_str());
 
+  Serial.printf("[PAIRING][WIFI] Connecting to %s '%s'\n", label.c_str(), ssid.c_str());
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+    delay(250);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("[PAIRING][WIFI] Failed connecting to %s '%s'\n", label.c_str(), ssid.c_str());
+    return false;
+  }
+
+  Serial.printf("[PAIRING][WIFI] Connected to %s | IP=%s RSSI=%d\n",
+                label.c_str(),
+                WiFi.localIP().toString().c_str(),
+                WiFi.RSSI());
+  return true;
+}
+
+bool connectToNodeAp() {
+  if (gTargetSsid.isEmpty() || gNodeApPassword.isEmpty()) return false;
+  gPauseMqtt = true;
+  return connectToWifi(gTargetSsid, gNodeApPassword, WIFI_TIMEOUT_MS + 5000, "node AP");
+}
+
+bool reconnectHomeWifi() {
+  WiFi.disconnect(true, true);
+  delay(150);
+  gPauseMqtt = false;
+  return WiFiManager::reconnect();
+}
+
+bool scanForCandidate() {
+  if (!ensureHomeWifiReady()) return false;
+
+  Serial.println("[PAIRING] Scanning nearby WiFi APs for unpaired nodes...");
+  int count = WiFi.scanNetworks(false, true);
+  if (count <= 0) {
+    WiFi.scanDelete();
+    return false;
+  }
+
+  int bestIndex = -1;
+  int bestRssi = -1000;
+  for (int i = 0; i < count; ++i) {
+    String ssid = WiFi.SSID(i);
+    if (!ssid.startsWith(NODE_AP_PREFIX)) continue;
+    const int rssi = WiFi.RSSI(i);
+    if (bestIndex < 0 || rssi > bestRssi) {
+      bestIndex = i;
+      bestRssi = rssi;
+    }
+  }
+
+  if (bestIndex < 0) {
+    WiFi.scanDelete();
+    return false;
+  }
+
+  gFoundSsid = WiFi.SSID(bestIndex);
+  gFoundNodeId = gFoundSsid.substring(strlen(NODE_AP_PREFIX));
+  gFoundNodeId.toUpperCase();
+  gFoundBleMac = WiFi.BSSIDstr(bestIndex);
+  gFoundBleMac.toUpperCase();
+  gFoundName = gFoundSsid;
+
+  Serial.printf("[PAIRING][CANDIDATE] ssid=%s nodeId=%s bssid=%s rssi=%d\n",
+                gFoundSsid.c_str(),
+                gFoundNodeId.c_str(),
+                gFoundBleMac.c_str(),
+                bestRssi);
+
+  WiFi.scanDelete();
+  return true;
+}
+
+bool fetchNodeProof() {
   String gatewayHardwareId = getGatewayHardwareIdString();
   if (gatewayHardwareId.isEmpty()) return false;
+  if (!connectToNodeAp()) return false;
 
-  Serial.printf("[PAIRING][ROLLBACK] Calling rollback for gw=%s\n", gatewayHardwareId.c_str());
+  bool ok = false;
+  String errorMessage;
+  HTTPClient http;
+
+  do {
+    if (!http.begin(String(NODE_AP_BASE_URL) + "/identity")) {
+      errorMessage = "identity begin failed";
+      break;
+    }
+    int code = http.GET();
+    String response = (code > 0) ? http.getString() : "";
+    http.end();
+    if (code <= 0) {
+      errorMessage = "identity request failed";
+      break;
+    }
+
+    StaticJsonDocument<512> identityDoc;
+    if (deserializeJson(identityDoc, response) != DeserializationError::Ok) {
+      errorMessage = "identity JSON invalid";
+      break;
+    }
+
+    String nodeId = String(identityDoc["data"]["nodeId"] | "");
+    nodeId.toUpperCase();
+    if (nodeId.isEmpty() || nodeId != gTargetNodeId) {
+      errorMessage = "identity mismatch";
+      break;
+    }
+
+    gChallengeNonce = makeNonceHex(16);
+
+    StaticJsonDocument<256> req;
+    req["gatewayHardwareId"] = gatewayHardwareId;
+    req["nonce"] = gChallengeNonce;
+    String body;
+    serializeJson(req, body);
+
+    if (!http.begin(String(NODE_AP_BASE_URL) + "/prove")) {
+      errorMessage = "prove begin failed";
+      break;
+    }
+    http.addHeader("Content-Type", "application/json");
+    code = http.POST(body);
+    response = (code > 0) ? http.getString() : "";
+    http.end();
+    if (code <= 0) {
+      errorMessage = "prove request failed";
+      break;
+    }
+
+    StaticJsonDocument<512> proofDoc;
+    if (deserializeJson(proofDoc, response) != DeserializationError::Ok) {
+      errorMessage = "proof JSON invalid";
+      break;
+    }
+
+    if (!(proofDoc["success"] | false)) {
+      errorMessage = String(proofDoc["message"] | "node proof failed");
+      break;
+    }
+
+    gChallengeProof = String(proofDoc["data"]["proof"] | "");
+    if (gChallengeProof.isEmpty()) {
+      errorMessage = "missing proof";
+      break;
+    }
+
+    ok = true;
+  } while (false);
+
+  if (!reconnectHomeWifi()) {
+    Serial.println("[PAIRING][WIFI] Failed reconnecting to home WiFi after proof fetch");
+    return false;
+  }
+
+  if (!ok) {
+    Serial.printf("[PAIRING][FAIL] fetchNodeProof: %s\n", errorMessage.c_str());
+  }
+  return ok;
+}
+
+bool requestPairingToken() {
+  if (!ensureHomeWifiReady()) return false;
+
+  PairingTokenResult result;
+  bool ok = ApiClient::verifyNodeProof(
+    API_BASE_URL,
+    getGatewayHardwareIdString(),
+    gTargetNodeId,
+    gPendingSessionId,
+    gChallengeNonce,
+    gChallengeProof,
+    result
+  );
+
+  gPairingTokenResult = result;
+  if (!ok) return false;
+  gPendingPairingToken = result.pairingToken;
+  return true;
+}
+
+bool sendProvisionToNode() {
+  ProvisioningData prov = WifiStore::load();
+  if (!prov.valid || gPendingPairingToken.isEmpty()) return false;
+  if (!connectToNodeAp()) return false;
+
+  bool ok = false;
+  String errorMessage;
+  HTTPClient http;
+
+  do {
+    StaticJsonDocument<512> req;
+    req["gatewayHardwareId"] = getGatewayHardwareIdString();
+    req["nodeId"] = gTargetNodeId;
+    req["wifiSsid"] = prov.ssid;
+    req["wifiPassword"] = prov.password;
+    req["apiBaseUrl"] = API_BASE_URL;
+    req["pairingToken"] = gPendingPairingToken;
+
+    String body;
+    serializeJson(req, body);
+
+    if (!http.begin(String(NODE_AP_BASE_URL) + "/provision")) {
+      errorMessage = "provision begin failed";
+      break;
+    }
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(body);
+    String response = (code > 0) ? http.getString() : "";
+    http.end();
+    if (code <= 0) {
+      errorMessage = "provision request failed";
+      break;
+    }
+
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, response) != DeserializationError::Ok) {
+      errorMessage = "provision JSON invalid";
+      break;
+    }
+
+    if (!(doc["success"] | false)) {
+      errorMessage = String(doc["message"] | "provision failed");
+      break;
+    }
+
+    ok = true;
+  } while (false);
+
+  if (!reconnectHomeWifi()) {
+    Serial.println("[PAIRING][WIFI] Failed reconnecting to home WiFi after provisioning");
+    return false;
+  }
+
+  if (!ok) {
+    Serial.printf("[PAIRING][FAIL] sendProvisionToNode: %s\n", errorMessage.c_str());
+  }
+  return ok;
+}
+
+bool rollbackPendingPairing() {
+  if (!gRollbackNeeded || gPendingPairingToken.isEmpty() || gTargetNodeId.isEmpty()) return true;
+  if (!ensureHomeWifiReady()) return false;
+
+  Serial.printf("[PAIRING][ROLLBACK] Calling rollback for node=%s\n", gTargetNodeId.c_str());
   bool ok = ApiClient::rollbackPairNode(
     API_BASE_URL,
-    gatewayHardwareId,
+    getGatewayHardwareIdString(),
+    gTargetNodeId,
     gPendingPairingToken,
     gRollbackResult
   );
@@ -212,8 +421,9 @@ bool rollbackPendingPairing() {
 void failAndReturnToScan(const String& reason, bool shouldRollback) {
   Serial.printf("[PAIRING][FAIL] %s\n", reason.c_str());
 
-  resetScan();
-  cleanupClient();
+  if (gPauseMqtt && !reconnectHomeWifi()) {
+    Serial.println("[PAIRING][FAIL] Could not restore home WiFi before retry");
+  }
 
   if (shouldRollback) {
     gRollbackNeeded = true;
@@ -227,212 +437,9 @@ void failAndReturnToScan(const String& reason, bool shouldRollback) {
 
   resetPendingConfirmationState();
   resetCandidate();
+  gPauseMqtt = false;
   gState = PairState::SCANNING;
   gStateAtMs = millis();
-}
-
-class ClientCallbacks : public NimBLEClientCallbacks {
-  void onConnect(NimBLEClient* client) override {
-    gClientConnected = true;
-    Serial.printf("[PAIRING][BLE] Connected, mtu=%u\n", client->getMTU());
-  }
-
-  void onDisconnect(NimBLEClient* client, int reason) override {
-    (void)client;
-    gClientConnected = false;
-    clearCharacteristicCache();
-    Serial.printf("[PAIRING][BLE] Disconnected, reason=%d\n", reason);
-  }
-
-#if defined(CONFIG_NIMBLE_CPP_IDF)
-  bool onConnParamsUpdateRequest(NimBLEClient* client, const ble_gap_upd_params* params) override {
-    (void)client;
-    (void)params;
-    return true;
-  }
-#endif
-};
-
-class ScanCallbacks : public NimBLEScanCallbacks {
-  void onResult(const NimBLEAdvertisedDevice* dev) override {
-    if (gFoundDevice != nullptr || dev == nullptr) return;
-
-    String addr = dev->getAddress().toString().c_str();
-    String name = dev->getName().c_str();
-    addr.toUpperCase();
-
-    bool matched = false;
-    if (dev->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-      matched = true;
-    } else if (name.startsWith("IOT-")) {
-      matched = true;
-    }
-
-    if (!matched) return;
-
-    gFoundDevice = new NimBLEAdvertisedDevice(*dev);
-    gFoundBleMac = addr;
-    gFoundName = name;
-    gStopScanRequested = true;
-  }
-
-  void onScanEnd(const NimBLEScanResults& results, int reason) override {
-    (void)results;
-    (void)reason;
-    gScanInProgress = false;
-  }
-};
-
-void handleNodeMessage(const String& json) {
-  if (json.isEmpty()) return;
-
-  StaticJsonDocument<256> doc;
-  if (deserializeJson(doc, json) != DeserializationError::Ok) return;
-
-  if (!doc.containsKey("success")) return;
-
-  bool success = doc["success"] | false;
-  String nodeId = String(doc["nodeId"] | "");
-  String message = String(doc["message"] | "");
-  nodeId.toUpperCase();
-
-  if (!nodeId.isEmpty() && !gTargetNodeId.isEmpty() && nodeId != gTargetNodeId) {
-    Serial.printf("[PAIRING][BLE] Ignoring result for unexpected node %s\n", nodeId.c_str());
-    return;
-  }
-
-  gNodeResultMessage = message;
-  gNotificationReceived = true;
-  if (success) {
-    gNodeReportedSuccess = true;
-    gNodeReportedFailure = false;
-    Serial.printf("[PAIRING][BLE] Node reported success for %s\n", gTargetNodeId.c_str());
-  } else {
-    gNodeReportedFailure = true;
-    gNodeReportedSuccess = false;
-    Serial.printf("[PAIRING][BLE] Node reported failure: %s\n", message.c_str());
-  }
-}
-
-void txNotifyCallback(NimBLERemoteCharacteristic* characteristic, uint8_t* data, size_t length, bool isNotify) {
-  (void)characteristic;
-  (void)isNotify;
-
-  String json;
-  json.reserve(length);
-  for (size_t i = 0; i < length; ++i) json += static_cast<char>(data[i]);
-  Serial.printf("[PAIRING][BLE] Notification received: %s\n", json.c_str());
-  handleNodeMessage(json);
-}
-
-void startBleStack() {
-  if (gBleInitialized) return;
-
-  NimBLEDevice::init("GW-SCANNER");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-  NimBLEDevice::setSecurityAuth(false, false, false);
-
-  NimBLEScan* scan = NimBLEDevice::getScan();
-  scan->setScanCallbacks(new ScanCallbacks(), false);
-  scan->setActiveScan(true);
-  scan->setInterval(100);
-  scan->setWindow(90);
-
-  gBleInitialized = true;
-  Serial.printf("[BLE] NimBLE stack started - heap=%u\n", ESP.getFreeHeap());
-}
-
-bool readNodeInfo(NimBLERemoteCharacteristic* txChar, String& outNodeId, String& outNodeName) {
-  if (txChar == nullptr) return false;
-
-  std::string value = txChar->readValue();
-  if (value.empty()) return false;
-
-  String json = value.c_str();
-  StaticJsonDocument<256> doc;
-  if (deserializeJson(doc, json) != DeserializationError::Ok) return false;
-
-  outNodeId = String(doc["nodeId"] | "");
-  outNodeName = String(doc["nodeName"] | "");
-  outNodeId.toUpperCase();
-
-  return !outNodeId.isEmpty();
-}
-
-bool connectAndCacheCharacteristics() {
-  if (gFoundDevice == nullptr) return false;
-
-  resetScan();
-  cleanupClient();
-
-  gClient = NimBLEDevice::createClient();
-  if (!gClient) return false;
-
-  gClient->setClientCallbacks(new ClientCallbacks(), true);
-  gClient->setConnectionParams(12, 12, 0, 120);
-  gClient->setConnectTimeout(5);
-
-  Serial.printf("[PAIRING][BLE] Connecting to node [%s]...\n", gFoundBleMac.c_str());
-  if (!gClient->connect(gFoundDevice, false)) return false;
-  if (!gClient->isConnected()) return false;
-
-  NimBLERemoteService* service = gClient->getService(NimBLEUUID(SERVICE_UUID));
-  if (!service) return false;
-
-  gTxChar = service->getCharacteristic(NimBLEUUID(TX_UUID));
-  gRxChar = service->getCharacteristic(NimBLEUUID(RX_UUID));
-  if (gTxChar == nullptr || gRxChar == nullptr) return false;
-
-  if (gTxChar->canNotify()) {
-    if (!gTxChar->subscribe(true, txNotifyCallback, false)) {
-      Serial.println("[PAIRING][BLE] TX notify subscribe failed, falling back to polling");
-    }
-  }
-
-  return true;
-}
-
-bool writeProvisioningPacket() {
-  if (!gRxChar || !gClient || !gClient->isConnected()) return false;
-
-  ProvisioningData prov = WifiStore::load();
-  if (!prov.valid) return false;
-
-  String gatewayHardwareId = getGatewayHardwareIdString();
-  if (gatewayHardwareId.isEmpty()) return false;
-
-  StaticJsonDocument<512> doc;
-  doc["gatewayHardwareId"] = gatewayHardwareId;
-  doc["nodeId"] = gTargetNodeId;
-  doc["wifiSsid"] = prov.ssid;
-  doc["wifiPassword"] = prov.password;
-  doc["apiBaseUrl"] = API_BASE_URL;
-  doc["pairingToken"] = gPendingPairingToken;
-
-  String payload;
-  serializeJson(doc, payload);
-
-  Serial.println("[PAIRING][WRITE] Sending provisioning packet:");
-  Serial.println(payload);
-
-  try {
-    bool ok = gRxChar->writeValue(reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), true);
-    gBleWriteDone = ok;
-    return ok;
-  } catch (...) {
-    return false;
-  }
-}
-
-bool readNodeResultOnce() {
-  if (!gTxChar || !gClient || !gClient->isConnected()) return false;
-
-  std::string value = gTxChar->readValue();
-  if (value.empty()) return false;
-
-  String json = value.c_str();
-  handleNodeMessage(json);
-  return gNotificationReceived;
 }
 
 } // namespace
@@ -443,19 +450,18 @@ void begin() {
   gComplete = false;
   gBusy = false;
   gGatewayProvisioned = false;
+  gPauseMqtt = false;
 
-  resetScan();
-  cleanupClient();
   resetCandidate();
   resetPendingConfirmationState();
 
   ProvisioningData prov = WifiStore::load();
   if (!prov.valid) {
-    fatalError("No valid WiFi provisioning data - re-provision the gateway via BLE");
+    fatalError("No valid WiFi provisioning data - re-provision the gateway");
     return;
   }
   if (prov.token.isEmpty()) {
-    fatalError("No provisioning token - re-provision the gateway via BLE app");
+    fatalError("No provisioning token - re-provision the gateway");
     return;
   }
 
@@ -470,8 +476,7 @@ void begin() {
     return;
   }
 
-  startBleStack();
-  Serial.println("[PAIRING] Gateway node scan mode started");
+  Serial.println("[PAIRING] WiFi pairing scan mode started");
   gState = PairState::SCANNING;
   gStateAtMs = millis();
 }
@@ -481,140 +486,71 @@ void loop() {
   gBusy = true;
 
   switch (gState) {
-    case PairState::SCANNING: {
-      if (!gBleInitialized) startBleStack();
-      if (gScanInProgress) {
-        if (gStopScanRequested) {
-          resetScan();
-        } else {
-          delay(50);
-          break;
-        }
-      }
-
+    case PairState::SCANNING:
       resetCandidate();
-      Serial.println("[PAIRING] Scanning for unpaired nodes...");
-      gScanInProgress = true;
-      NimBLEDevice::getScan()->start(SCAN_SECONDS, false, true);
-
-      if (gFoundDevice == nullptr) {
-        delay(250);
-        break;
-      }
-
-      gState = PairState::CONNECTING;
-      gStateAtMs = millis();
-      break;
-    }
-
-    case PairState::CONNECTING: {
-      if (!connectAndCacheCharacteristics()) {
-        failAndReturnToScan("BLE connect failed", false);
-        break;
-      }
-
-      gState = PairState::DISCOVERING;
-      gStateAtMs = millis();
-      break;
-    }
-
-    case PairState::DISCOVERING: {
-      String nodeId;
-      String nodeName;
-      if (!readNodeInfo(gTxChar, nodeId, nodeName)) {
-        failAndReturnToScan("Failed reading node info", false);
-        break;
-      }
-
-      gFoundNodeId = nodeId;
-      if (!nodeName.isEmpty()) gFoundName = nodeName;
-      gTargetNodeId = gFoundNodeId;
-      gTargetBleMac = gFoundBleMac;
-
-      Serial.printf("[PAIRING][CANDIDATE] nodeId=%s nodeName=%s bleMac=%s\n",
-                    gFoundNodeId.c_str(), gFoundName.c_str(), gFoundBleMac.c_str());
-
-      gState = PairState::WAITING_CONFIRMATION;
-      gStateAtMs = millis();
-      break;
-    }
-
-    case PairState::WAITING_CONFIRMATION: {
-      if (!gClient || !gClient->isConnected()) {
-        failAndReturnToScan("Lost BLE connection while waiting confirmation", false);
-        break;
-      }
-
-      if (gConfirmationPending) {
-        gState = PairState::WRITE_PACKET;
+      if (scanForCandidate()) {
+        gState = PairState::WAITING_CONFIRMATION;
         gStateAtMs = millis();
-        break;
-      }
-
-      delay(50);
-      break;
-    }
-
-    case PairState::WRITE_PACKET: {
-      if (!gClient || !gClient->isConnected()) {
-        failAndReturnToScan("BLE link lost before provisioning write", false);
-        break;
-      }
-
-      if (!writeProvisioningPacket()) {
-        failAndReturnToScan("BLE provisioning write failed", false);
-        break;
-      }
-
-      gRollbackNeeded = true;
-      gNotificationReceived = false;
-      gNodeReportedSuccess = false;
-      gNodeReportedFailure = false;
-      gNodeResultMessage = "";
-      gState = PairState::WAIT_NODE_RESULT;
-      gStateAtMs = millis();
-      break;
-    }
-
-    case PairState::WAIT_NODE_RESULT: {
-      if (!gClient || !gClient->isConnected()) {
-        failAndReturnToScan("Node disconnected before reporting result", true);
-        break;
-      }
-
-      if (!gNotificationReceived) {
-        readNodeResultOnce();
-      }
-
-      if (gNodeReportedFailure) {
-        failAndReturnToScan("Node pairing failed: " + gNodeResultMessage, true);
-        break;
-      }
-      if (gNodeReportedSuccess) {
-        cleanupClient();
-        resetCandidate();
-        gState = PairState::WAIT_KEY_READY;
-        gStateAtMs = millis();
-        break;
-      }
-
-      if (millis() - gStateAtMs > BLE_RESULT_TIMEOUT_MS) {
-        failAndReturnToScan("Timed out waiting for node BLE result", true);
       } else {
-        delay(150);
+        delay(1000);
       }
       break;
-    }
 
-    case PairState::WAIT_KEY_READY: {
-      if (!gReceivedAesKey.isEmpty()) {
-        gState = PairState::SAVE_LOCAL;
+    case PairState::WAITING_CONFIRMATION:
+      if (!ensureHomeWifiReady()) {
+        delay(500);
+        break;
+      }
+      if (gConfirmationPending) {
+        gState = PairState::FETCHING_PROOF;
         gStateAtMs = millis();
       } else {
         delay(100);
       }
       break;
-    }
+
+    case PairState::FETCHING_PROOF:
+      if (!fetchNodeProof()) {
+        failAndReturnToScan("Failed to fetch node proof over WiFi", false);
+        break;
+      }
+      gState = PairState::VERIFYING_PROOF;
+      gStateAtMs = millis();
+      break;
+
+    case PairState::VERIFYING_PROOF:
+      if (!requestPairingToken()) {
+        failAndReturnToScan("Failed verifying node proof: " + gPairingTokenResult.message, false);
+        break;
+      }
+      gState = PairState::SENDING_PROVISION;
+      gStateAtMs = millis();
+      break;
+
+    case PairState::SENDING_PROVISION:
+      if (!sendProvisionToNode()) {
+        failAndReturnToScan("Failed sending WiFi provisioning to node", true);
+        break;
+      }
+      gRollbackNeeded = true;
+      gState = PairState::WAIT_KEY_READY;
+      gStateAtMs = millis();
+      break;
+
+    case PairState::WAIT_KEY_READY:
+      if (!ensureHomeWifiReady()) {
+        delay(500);
+        break;
+      }
+      if (!gReceivedAesKey.isEmpty()) {
+        gState = PairState::SAVE_LOCAL;
+        gStateAtMs = millis();
+      } else if (millis() - gStateAtMs > WAIT_KEY_TIMEOUT_MS) {
+        failAndReturnToScan("Timed out waiting for PAIRING_KEY_READY", true);
+      } else {
+        delay(150);
+      }
+      break;
 
     case PairState::SAVE_LOCAL: {
       NodePairingData local;
@@ -626,7 +562,7 @@ void loop() {
       local.bleAddress = gTargetBleMac;
 
       if (!NodePairingStore::save(local)) {
-        failAndReturnToScan("Failed to save local pairing data", true);
+        failAndReturnToScan("Failed saving local node pairing", true);
         break;
       }
 
@@ -638,17 +574,15 @@ void loop() {
       break;
     }
 
-    case PairState::FAILED_WAIT: {
+    case PairState::FAILED_WAIT:
       if ((int32_t)(millis() - gRetryAtMs) >= 0) {
         failAndReturnToScan("Retrying after rollback failure", true);
       }
       break;
-    }
 
-    case PairState::COMPLETE: {
+    case PairState::COMPLETE:
       gComplete = true;
       break;
-    }
 
     case PairState::FATAL_ERROR: {
       static uint32_t lastPrintMs = 0;
@@ -671,6 +605,10 @@ bool isComplete() {
   return gComplete;
 }
 
+bool shouldPauseMqtt() {
+  return gPauseMqtt;
+}
+
 bool hasCandidate() {
   return gState == PairState::WAITING_CONFIRMATION && !gFoundNodeId.isEmpty();
 }
@@ -684,27 +622,27 @@ PairingCandidateInfo getCandidate() {
   return info;
 }
 
-bool confirmCandidate(const String& nodeId, const String& pairingToken) {
+bool confirmCandidate(const String& nodeId, const String& sessionId, const String& apPassword) {
   String normalizedNodeId = nodeId;
   normalizedNodeId.toUpperCase();
 
   if (gState != PairState::WAITING_CONFIRMATION) return false;
   if (normalizedNodeId.isEmpty() || normalizedNodeId != gFoundNodeId) return false;
-  if (pairingToken.isEmpty()) return false;
-  if (!gClient || !gClient->isConnected()) return false;
+  if (sessionId.isEmpty() || apPassword.isEmpty()) return false;
 
   gTargetNodeId = normalizedNodeId;
+  gTargetSsid = gFoundSsid;
   gTargetBleMac = gFoundBleMac;
-  gPendingPairingToken = pairingToken;
+  gPendingSessionId = sessionId;
+  gNodeApPassword = apPassword;
   gConfirmationPending = true;
+  gPendingPairingToken = "";
   gReceivedAesKey = "";
-  gNodeReportedSuccess = false;
-  gNodeReportedFailure = false;
-  gNodeResultMessage = "";
-  gNotificationReceived = false;
+  gChallengeNonce = "";
+  gChallengeProof = "";
 
   Serial.printf("[PAIRING] Candidate confirmed for node %s\n", gTargetNodeId.c_str());
-  gState = PairState::WRITE_PACKET;
+  gState = PairState::FETCHING_PROOF;
   gStateAtMs = millis();
   return true;
 }
@@ -728,10 +666,10 @@ bool providePairingKey(const String& nodeId, const String& aesKey) {
 
 void cancelPendingConfirmation() {
   if (gState == PairState::WAITING_CONFIRMATION || gState == PairState::WAIT_KEY_READY) {
-    resetScan();
-    cleanupClient();
+    if (gPauseMqtt) reconnectHomeWifi();
     resetPendingConfirmationState();
     resetCandidate();
+    gPauseMqtt = false;
     gState = PairState::SCANNING;
     gStateAtMs = millis();
   }

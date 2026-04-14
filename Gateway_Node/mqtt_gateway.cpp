@@ -47,15 +47,16 @@ void ensureTopics() {
 }
 
 void handleConfirmPairing(JsonDocument& doc) {
-  String nodeId       = String(doc["nodeId"] | "");
-  String pairingToken = String(doc["pairingToken"] | "");
+  String nodeId = String(doc["nodeId"] | "");
+  String sessionId = String(doc["sessionId"] | "");
+  String apPassword = String(doc["apPassword"] | "");
 
-  if (nodeId.isEmpty() || pairingToken.isEmpty()) {
-    Serial.println("[MQTT] CONFIRM_PAIRING missing nodeId or pairingToken");
+  if (nodeId.isEmpty() || sessionId.isEmpty() || apPassword.isEmpty()) {
+    Serial.println("[MQTT] CONFIRM_PAIRING missing nodeId, sessionId, or apPassword");
     return;
   }
 
-  bool ok = NodePairingMode::confirmCandidate(nodeId, pairingToken);
+  bool ok = NodePairingMode::confirmCandidate(nodeId, sessionId, apPassword);
   Serial.printf("[MQTT] CONFIRM_PAIRING node=%s result=%s\n",
                 nodeId.c_str(),
                 ok ? "accepted" : "ignored");

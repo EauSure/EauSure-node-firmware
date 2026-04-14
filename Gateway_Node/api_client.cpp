@@ -53,7 +53,7 @@ static void printDnsLookup(const String& host) {
   }
 }
 
-static int httpsPost(const String& url, const String& body, String& responseOut) {
+static int httpsPost(const String& url, const String& body, String& responseOut, bool includeGatewayApiKey = false) {
   responseOut = "";
   String host = extractHostFromUrl(url);
 
@@ -88,6 +88,9 @@ static int httpsPost(const String& url, const String& body, String& responseOut)
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Connection", "close");
+  if (includeGatewayApiKey) {
+    http.addHeader("X-Gateway-Key", API_KEY);
+  }
 
   int code = http.POST(body);
   responseOut = (code > 0) ? http.getString() : "";
@@ -181,6 +184,7 @@ bool provisionGateway(
   const String& apiBaseUrl,
   const String& gatewayHardwareId,
   const String& firmwareVersion,
+  const String& deviceSecret,
   const String& token,
   const String& gatewayName,
   GatewayProvisionResult& out
@@ -191,12 +195,17 @@ bool provisionGateway(
     out.message = "API base URL is empty";
     return false;
   }
+  if (deviceSecret.isEmpty()) {
+    out.message = "Gateway device secret is empty";
+    return false;
+  }
 
   String url = apiBaseUrl + "/api/registry/gateway/provision";
 
-  StaticJsonDocument<256> req;
+  StaticJsonDocument<320> req;
   req["gatewayHardwareId"] = gatewayHardwareId;
   req["firmwareVersion"] = firmwareVersion;
+  req["deviceSecret"] = deviceSecret;
   req["token"] = token;
   req["gatewayName"] = gatewayName;
 
@@ -238,6 +247,7 @@ bool provisionGateway(
 bool rollbackPairNode(
   const String& apiBaseUrl,
   const String& gatewayHardwareId,
+  const String& nodeId,
   const String& pairingToken,
   ApiBasicResult& out
 ) {
@@ -251,11 +261,16 @@ bool rollbackPairNode(
     out.message = "Pairing token is empty";
     return false;
   }
+  if (nodeId.isEmpty()) {
+    out.message = "Node ID is empty";
+    return false;
+  }
 
   String url = apiBaseUrl + "/api/registry/pair-node/rollback";
 
   StaticJsonDocument<256> req;
   req["gatewayHardwareId"] = gatewayHardwareId;
+  req["nodeId"] = nodeId;
   req["pairingToken"] = pairingToken;
 
   String body;
@@ -265,7 +280,7 @@ bool rollbackPairNode(
   Serial.println("[API] Body: " + body);
 
   String response;
-  int code = httpsPost(url, body, response);
+  int code = httpsPost(url, body, response, true);
   out.httpCode = code;
 
   if (code <= 0) {
@@ -282,6 +297,73 @@ bool rollbackPairNode(
   out.success = resp["success"] | false;
   out.message = String(resp["message"] | "");
   return out.success;
+}
+
+bool verifyNodeProof(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  const String& nodeId,
+  const String& sessionId,
+  const String& nonce,
+  const String& proof,
+  PairingTokenResult& out
+) {
+  out = PairingTokenResult{};
+
+  if (apiBaseUrl.isEmpty()) {
+    out.message = "API base URL is empty";
+    return false;
+  }
+  if (gatewayHardwareId.isEmpty() || nodeId.isEmpty() || sessionId.isEmpty()) {
+    out.message = "Missing pairing verification identifiers";
+    return false;
+  }
+  if (nonce.isEmpty() || proof.isEmpty()) {
+    out.message = "Missing nonce or proof";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/pair-node/verify-proof";
+
+  StaticJsonDocument<384> req;
+  req["gatewayHardwareId"] = gatewayHardwareId;
+  req["nodeId"] = nodeId;
+  req["sessionId"] = sessionId;
+  req["nonce"] = nonce;
+  req["proof"] = proof;
+
+  String body;
+  serializeJson(req, body);
+
+  Serial.println("\n[API] POST " + url);
+
+  String response;
+  int code = httpsPost(url, body, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP POST failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<512> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  out.message = String(resp["message"] | "");
+  if (!out.success) return false;
+
+  JsonObject data = resp["data"];
+  out.pairingToken = String(data["pairingToken"] | "");
+  if (out.pairingToken.isEmpty()) {
+    out.message = "Missing pairing token in response";
+    return false;
+  }
+
+  return true;
 }
 
 } // namespace ApiClient

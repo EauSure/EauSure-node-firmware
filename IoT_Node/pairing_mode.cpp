@@ -1,24 +1,27 @@
 #include "pairing_mode.h"
 #include "pairing_store.h"
 #include "config.h"
+#include "app_state.h"
+#include "display_oled.h"
 
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
+#include <WebServer.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-
-static BLECharacteristic* gTx = nullptr;
-static BLEAdvertising* gAdvertising = nullptr;
-static bool gComplete = false;
-
-static const char* SERVICE_UUID = "22345678-1234-1234-1234-1234567890ab";
-static const char* RX_UUID      = "22345678-1234-1234-1234-1234567890ac";
-static const char* TX_UUID      = "22345678-1234-1234-1234-1234567890ad";
+#include <ArduinoJson.h>
+#include <Wire.h>
+#include <mbedtls/md.h>
 
 namespace {
+WebServer gServer(80);
+bool gComplete = false;
+String gApSsid = "";
+String gApPassword = "";
+String gStatusTitle = "PAIRING";
+String gStatusLine1 = "Booting...";
+String gStatusLine2 = "";
+String gStatusLine3 = "";
+
 struct PairingProvisionPacket {
   String gatewayHardwareId;
   String nodeId;
@@ -28,6 +31,18 @@ struct PairingProvisionPacket {
   String pairingToken;
   bool valid = false;
 };
+
+String getNodeIdString() {
+  char buf[9];
+  snprintf(buf, sizeof(buf), "%08lX", (unsigned long)DEVICE_ID);
+  return String(buf);
+}
+
+String clipLine(const String& value, size_t maxLen = 20) {
+  if (value.length() <= maxLen) return value;
+  if (maxLen <= 3) return value.substring(0, maxLen);
+  return value.substring(0, maxLen - 3) + "...";
+}
 
 String extractHostFromUrl(const String& url) {
   int start = 0;
@@ -39,41 +54,57 @@ String extractHostFromUrl(const String& url) {
   return url.substring(start, slash);
 }
 
-String getNodeIdString() {
-  char buf[9];
-  snprintf(buf, sizeof(buf), "%08lX", (unsigned long)DEVICE_ID);
-  return String(buf);
-}
+String hmacSha256Hex(const String& key, const String& message) {
+  unsigned char out[32];
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  mbedtls_md_setup(&ctx, info, 1);
+  mbedtls_md_hmac_starts(&ctx, reinterpret_cast<const unsigned char*>(key.c_str()), key.length());
+  mbedtls_md_hmac_update(&ctx, reinterpret_cast<const unsigned char*>(message.c_str()), message.length());
+  mbedtls_md_hmac_finish(&ctx, out);
+  mbedtls_md_free(&ctx);
 
-void restartAdvertising() {
-  if (!gAdvertising) return;
-
-  gAdvertising->stop();
-  delay(100);
-
-  BLEAdvertisementData scanResp;
-  scanResp.setName(("IOT-" + getNodeIdString()).c_str());
-  gAdvertising->setScanResponseData(scanResp);
-
-  BLEDevice::startAdvertising();
-  Serial.println("[PAIRING] Advertising restarted");
-  Serial.printf("[PAIRING] BLE MAC: %s\n", BLEDevice::getAddress().toString().c_str());
-}
-
-void notifyResult(bool success, const String& message, const String& nodeId = "") {
-  if (!gTx) return;
-
-  StaticJsonDocument<256> doc;
-  doc["success"] = success;
-  doc["message"] = message;
-  if (success && !nodeId.isEmpty()) {
-    doc["nodeId"] = nodeId;
+  static const char* HEX = "0123456789abcdef";
+  String hex;
+  hex.reserve(64);
+  for (size_t i = 0; i < sizeof(out); ++i) {
+    hex += HEX[(out[i] >> 4) & 0x0F];
+    hex += HEX[out[i] & 0x0F];
   }
+  return hex;
+}
 
-  String payload;
-  serializeJson(doc, payload);
-  gTx->setValue(payload.c_str());
-  gTx->notify();
+String deriveApPassword() {
+  return hmacSha256Hex(NODE_DEVICE_SECRET, String("node-ap:") + getNodeIdString()).substring(0, 12);
+}
+
+String buildNodeProof(const String& nonce, const String& gatewayHardwareId) {
+  return hmacSha256Hex(
+    NODE_DEVICE_SECRET,
+    nonce + "|" + getNodeIdString() + "|" + gatewayHardwareId
+  );
+}
+
+void renderPairingScreen(const String& title, const String& line1, const String& line2 = "", const String& line3 = "") {
+  gStatusTitle = title;
+  gStatusLine1 = line1;
+  gStatusLine2 = line2;
+  gStatusLine3 = line3;
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(title);
+  display.drawLine(0, 10, 127, 10, SSD1306_WHITE);
+  display.setCursor(0, 18);
+  display.print(clipLine(line1));
+  display.setCursor(0, 32);
+  display.print(clipLine(line2));
+  display.setCursor(0, 46);
+  display.print(clipLine(line3));
+  display.display();
 }
 
 bool parseProvisionPacket(const String& value, PairingProvisionPacket& out) {
@@ -83,11 +114,11 @@ bool parseProvisionPacket(const String& value, PairingProvisionPacket& out) {
   }
 
   out.gatewayHardwareId = String(doc["gatewayHardwareId"] | "");
-  out.nodeId            = String(doc["nodeId"] | "");
-  out.wifiSsid          = String(doc["wifiSsid"] | "");
-  out.wifiPassword      = String(doc["wifiPassword"] | "");
-  out.apiBaseUrl        = String(doc["apiBaseUrl"] | "");
-  out.pairingToken      = String(doc["pairingToken"] | "");
+  out.nodeId = String(doc["nodeId"] | "");
+  out.wifiSsid = String(doc["wifiSsid"] | "");
+  out.wifiPassword = String(doc["wifiPassword"] | "");
+  out.apiBaseUrl = String(doc["apiBaseUrl"] | "");
+  out.pairingToken = String(doc["pairingToken"] | "");
 
   out.valid = !out.gatewayHardwareId.isEmpty() &&
               !out.nodeId.isEmpty() &&
@@ -99,36 +130,33 @@ bool parseProvisionPacket(const String& value, PairingProvisionPacket& out) {
 
 bool connectWifiForPairing(const String& ssid, const String& password, String& errorOut) {
   errorOut = "";
-
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(false, true);
   delay(200);
   WiFi.begin(ssid.c_str(), password.c_str());
 
-  Serial.printf("[PAIRING][WIFI] Connecting to SSID '%s'...\n", ssid.c_str());
+  renderPairingScreen("PAIRING", "Joining home WiFi", ssid, "Please wait...");
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < 15000) {
     delay(300);
-    Serial.print('.');
   }
-  Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
     errorOut = "WiFi connect failed";
+    renderPairingScreen("PAIRING", "WiFi failed", ssid, "Retry from gateway");
     return false;
   }
 
-  Serial.printf("[PAIRING][WIFI] Connected — IP=%s\n", WiFi.localIP().toString().c_str());
+  renderPairingScreen("PAIRING", "Home WiFi connected", WiFi.localIP().toString(), "Requesting key...");
   return true;
 }
 
-void disconnectWifiAfterPairing() {
+void disconnectStationAfterPairing() {
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("[PAIRING][WIFI] Disconnecting temporary WiFi");
+    WiFi.disconnect(false, true);
+    delay(100);
   }
-  WiFi.disconnect(true, true);
-  delay(100);
-  WiFi.mode(WIFI_OFF);
+  WiFi.mode(WIFI_AP);
 }
 
 bool callPairNodeApi(
@@ -155,14 +183,11 @@ bool callPairNodeApi(
 
   StaticJsonDocument<256> req;
   req["gatewayHardwareId"] = packet.gatewayHardwareId;
-  req["nodeId"]            = packet.nodeId;
-  req["pairingToken"]      = packet.pairingToken;
+  req["nodeId"] = packet.nodeId;
+  req["pairingToken"] = packet.pairingToken;
 
   String body;
   serializeJson(req, body);
-
-  Serial.println("[PAIRING][API] POST " + url);
-  Serial.println("[PAIRING][API] Body: " + body);
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -186,11 +211,6 @@ bool callPairNodeApi(
   int code = http.POST(body);
   String response = (code > 0) ? http.getString() : "";
 
-  Serial.printf("[PAIRING][API] HTTP code=%d\n", code);
-  if (!response.isEmpty()) {
-    Serial.println("[PAIRING][API] Response: " + response);
-  }
-
   if (code <= 0) {
     errorOut = "HTTP POST failed (code=" + String(code) + ")";
     http.end();
@@ -204,16 +224,15 @@ bool callPairNodeApi(
     return false;
   }
 
-  bool success = resp["success"] | false;
-  if (!success) {
+  if (!(resp["success"] | false)) {
     errorOut = String(resp["message"] | "Pairing failed");
     http.end();
     return false;
   }
 
   JsonObject data = resp["data"];
-  aesKeyOut            = String(data["aesKey"] | "");
-  nodeIdOut            = String(data["nodeId"] | "");
+  aesKeyOut = String(data["aesKey"] | "");
+  nodeIdOut = String(data["nodeId"] | "");
   gatewayHardwareIdOut = String(data["gatewayHardwareId"] | "");
 
   if (aesKeyOut.isEmpty() || nodeIdOut.isEmpty() || gatewayHardwareIdOut.isEmpty()) {
@@ -226,14 +245,16 @@ bool callPairNodeApi(
   return true;
 }
 
-bool performPairingFlow(const PairingProvisionPacket& packet, String& errorOut) {
+bool performProvisioningFlow(const PairingProvisionPacket& packet, String& errorOut) {
   if (!packet.valid) {
-    errorOut = "Invalid pairing payload";
+    errorOut = "Invalid provisioning payload";
     return false;
   }
 
   String expectedNodeId = getNodeIdString();
-  if (packet.nodeId != expectedNodeId) {
+  String normalizedNodeId = packet.nodeId;
+  normalizedNodeId.toUpperCase();
+  if (normalizedNodeId != expectedNodeId) {
     errorOut = "Node ID mismatch";
     return false;
   }
@@ -250,142 +271,159 @@ bool performPairingFlow(const PairingProvisionPacket& packet, String& errorOut) 
   String apiError;
   bool apiOk = callPairNodeApi(packet, aesKey, gatewayHardwareId, nodeId, apiError);
 
-  disconnectWifiAfterPairing();
-
   if (!apiOk) {
+    disconnectStationAfterPairing();
     errorOut = apiError;
     return false;
   }
 
   NodePairingData d;
-  d.valid             = true;
+  d.valid = true;
   d.gatewayHardwareId = gatewayHardwareId;
-  d.nodeId            = nodeId;
-  d.nodeName          = "iot-node";
-  d.aesKeyHex         = aesKey;
+  d.nodeId = nodeId;
+  d.nodeName = "iot-node";
+  d.aesKeyHex = aesKey;
 
   if (!PairingStore::save(d)) {
+    disconnectStationAfterPairing();
     errorOut = "Failed to save pairing";
     return false;
   }
 
-  Serial.printf("[PAIRING] Pairing saved gw=%s node=%s\n",
-                d.gatewayHardwareId.c_str(),
-                d.nodeId.c_str());
+  renderPairingScreen("PAIRING", "Pairing complete", "Restarting node", gatewayHardwareId);
   return true;
 }
-}  // namespace
 
-class PairServerCallbacks : public BLEServerCallbacks {
-  void onDisconnect(BLEServer* server) override {
-    (void)server;
-    if (!gComplete) {
-      Serial.println("[PAIRING] Client disconnected — restarting advertising");
-      vTaskDelay(pdMS_TO_TICKS(200));
-      restartAdvertising();
-    }
-  }
-};
+void handleIdentity() {
+  renderPairingScreen("PAIRING AP", "Gateway probing", getNodeIdString(), "Await proof");
 
-class PairRxCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* c) override {
-    String value = c->getValue();
-    if (value.isEmpty()) return;
+  StaticJsonDocument<256> doc;
+  doc["success"] = true;
+  JsonObject data = doc.createNestedObject("data");
+  data["nodeId"] = getNodeIdString();
+  data["nodeName"] = "iot-node";
+  data["mode"] = "PAIRING_AP";
 
-    PairingProvisionPacket packet;
-    if (!parseProvisionPacket(value, packet)) {
-      notifyResult(false, "Invalid JSON or missing fields");
-      return;
-    }
-
-    Serial.printf("[PAIRING] Received pairing packet for node=%s gw=%s\n",
-                  packet.nodeId.c_str(), packet.gatewayHardwareId.c_str());
-
-    String error;
-    if (!performPairingFlow(packet, error)) {
-      Serial.printf("[PAIRING] Pairing failed: %s\n", error.c_str());
-      notifyResult(false, error);
-      restartAdvertising();
-      return;
-    }
-
-    gComplete = true;
-    notifyResult(true, "Node paired", packet.nodeId);
-  }
-};
-
-void PairingMode::begin() {
-  gComplete = false;
-
-  String devName = "IOT-" + getNodeIdString();
-
-  BLEDevice::init(devName.c_str());
-
-  BLEServer* server = BLEDevice::createServer();
-  server->setCallbacks(new PairServerCallbacks());
-
-  BLEService* service = server->createService(BLEUUID(SERVICE_UUID));
-
-  BLECharacteristic* rx = service->createCharacteristic(
-    BLEUUID(RX_UUID),
-    BLECharacteristic::PROPERTY_WRITE
-  );
-
-  gTx = service->createCharacteristic(
-    BLEUUID(TX_UUID),
-    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
-  );
-
-  rx->setCallbacks(new PairRxCallbacks());
-
-  StaticJsonDocument<160> doc;
-  doc["nodeId"] = getNodeIdString();
-  doc["nodeName"] = "iot-node";
-  doc["nodeType"] = "water-quality";
-
-  String infoValue;
-  serializeJson(doc, infoValue);
-  gTx->setValue(infoValue.c_str());
-
-  service->start();
-
-  gAdvertising = BLEDevice::getAdvertising();
-  gAdvertising->stop();
-  gAdvertising->addServiceUUID(BLEUUID(SERVICE_UUID));
-  gAdvertising->setScanResponse(true);
-  gAdvertising->setMinPreferred(0x06);
-  gAdvertising->setMinPreferred(0x12);
-
-  BLEAdvertisementData advData;
-  advData.setCompleteServices(BLEUUID(SERVICE_UUID));
-  gAdvertising->setAdvertisementData(advData);
-
-  BLEAdvertisementData scanResp;
-  scanResp.setName(devName.c_str());
-  gAdvertising->setScanResponseData(scanResp);
-
-  gAdvertising->start();
-
-  Serial.printf("[PAIRING] Advertising as '%s'\n", devName.c_str());
-  Serial.printf("[PAIRING] Service UUID: %s\n", SERVICE_UUID);
-  Serial.printf("[PAIRING] BLE MAC: %s\n", BLEDevice::getAddress().toString().c_str());
+  String payload;
+  serializeJson(doc, payload);
+  gServer.send(200, "application/json", payload);
 }
 
-void PairingMode::loop() {
-  static uint32_t lastAliveMs = 0;
-  if (millis() - lastAliveMs > 3000) {
-    lastAliveMs = millis();
-    Serial.printf("[PAIRING] alive — complete=%d uptime=%lus\n",
-                  gComplete, millis() / 1000);
+void handleProve() {
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, gServer.arg("plain")) != DeserializationError::Ok) {
+    gServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+    return;
   }
+
+  String gatewayHardwareId = String(doc["gatewayHardwareId"] | "");
+  String nonce = String(doc["nonce"] | "");
+  if (gatewayHardwareId.isEmpty() || nonce.isEmpty()) {
+    gServer.send(400, "application/json", "{\"success\":false,\"message\":\"Missing gatewayHardwareId or nonce\"}");
+    return;
+  }
+
+  renderPairingScreen("PAIRING AP", "Gateway confirmed", getNodeIdString(), "Generating proof");
+
+  StaticJsonDocument<256> resp;
+  resp["success"] = true;
+  JsonObject data = resp.createNestedObject("data");
+  data["nodeId"] = getNodeIdString();
+  data["proof"] = buildNodeProof(nonce, gatewayHardwareId);
+
+  String payload;
+  serializeJson(resp, payload);
+  gServer.send(200, "application/json", payload);
+}
+
+void handleProvision() {
+  PairingProvisionPacket packet;
+  if (!parseProvisionPacket(gServer.arg("plain"), packet)) {
+    gServer.send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON or missing fields\"}");
+    return;
+  }
+
+  renderPairingScreen("PAIRING AP", "Provision request", packet.wifiSsid, "Contacting API");
+
+  String error;
+  if (!performProvisioningFlow(packet, error)) {
+    StaticJsonDocument<256> resp;
+    resp["success"] = false;
+    resp["message"] = error;
+    String payload;
+    serializeJson(resp, payload);
+    renderPairingScreen("PAIRING AP", "Provision failed", error, "Waiting retry");
+    gServer.send(500, "application/json", payload);
+    return;
+  }
+
+  StaticJsonDocument<256> resp;
+  resp["success"] = true;
+  resp["message"] = "Node provisioned";
+  String payload;
+  serializeJson(resp, payload);
+  gServer.send(200, "application/json", payload);
+  gComplete = true;
+}
+
+void startPairingAp() {
+  gApSsid = String("IOT-") + getNodeIdString();
+  gApPassword = deriveApPassword();
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPdisconnect(true);
+  delay(100);
+  if (!WiFi.softAP(gApSsid.c_str(), gApPassword.c_str())) {
+    renderPairingScreen("PAIRING AP", "SoftAP failed", gApSsid, "Reboot required");
+    Serial.printf("[PAIRING] SoftAP start failed for SSID=%s\n", gApSsid.c_str());
+    return;
+  }
+  delay(100);
+
+  IPAddress apIp = WiFi.softAPIP();
+  renderPairingScreen("PAIRING AP", gApSsid, apIp.toString(), "Await MQTT confirm");
+
+  gServer.on("/identity", HTTP_GET, handleIdentity);
+  gServer.on("/prove", HTTP_POST, handleProve);
+  gServer.on("/provision", HTTP_POST, handleProvision);
+  gServer.begin();
+
+  Serial.printf("[PAIRING] SoftAP ready SSID=%s IP=%s\n", gApSsid.c_str(), apIp.toString().c_str());
+}
+} // namespace
+
+namespace PairingMode {
+
+void begin() {
+  gComplete = false;
+  Wire.begin(I2C_SDA, I2C_SCL);
+  displayInit();
+  renderPairingScreen("PAIRING AP", "Starting WiFi AP", getNodeIdString(), "Please wait...");
+
+  String deviceSecret = NODE_DEVICE_SECRET;
+  if (deviceSecret.isEmpty() || deviceSecret.startsWith("replace-with-")) {
+    renderPairingScreen("PAIRING AP", "Secret missing", getNodeIdString(), "Set config.h");
+    Serial.println("[PAIRING] NODE_DEVICE_SECRET is not configured");
+    return;
+  }
+
+  startPairingAp();
+}
+
+void loop() {
+  gServer.handleClient();
 
   if (gComplete) {
     Serial.println("[PAIRING] Pairing complete, restarting...");
-    delay(1000);
+    delay(1500);
     ESP.restart();
   }
+
+  delay(20);
 }
 
-bool PairingMode::isComplete() {
+bool isComplete() {
   return gComplete;
 }
+
+} // namespace PairingMode

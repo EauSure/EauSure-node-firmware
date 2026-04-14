@@ -56,7 +56,9 @@ void loop() {
       break;
 
     case BootMode::NODE_PAIRING:
-      MqttGateway::loop();
+      if (!NodePairingMode::shouldPauseMqtt()) {
+        MqttGateway::loop();
+      }
       NodePairingMode::loop();
 
       if (NodePairingMode::hasCandidate()) {
@@ -67,6 +69,9 @@ void loop() {
             gLastPublishedCandidateId = c.nodeId;
           }
         }
+      } else if (!gLastPublishedCandidateId.isEmpty()) {
+        // Allow the same nearby node to be re-published after retries/timeouts.
+        gLastPublishedCandidateId = "";
       }
 
       if (NodePairingMode::isComplete()) {

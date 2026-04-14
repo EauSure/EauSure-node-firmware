@@ -48,6 +48,7 @@ void begin() {
     API_BASE_URL,
     gatewayHardwareId,
     GATEWAY_FIRMWARE_VERSION,
+    GATEWAY_DEVICE_SECRET,
     prov.token,
     prov.gatewayName,
     provision
