@@ -1,6 +1,12 @@
 #include "audio_alert.h"
 #include "sd_logger.h"
 
+namespace {
+void logAudioHeap(const char* stage) {
+  Serial.printf("[AUDIO][HEAP] %s free=%u min=%u\n", stage, ESP.getFreeHeap(), ESP.getMinFreeHeap());
+}
+}
+
 // =====================================================
 // Audio Global State
 // =====================================================
@@ -82,6 +88,13 @@ bool playAlertFile(const char* path) {
   }
 
   audioBusy = true;
+  logAudioHeap("before-open");
+
+  if (!SD.exists(path)) {
+    Serial.printf("[AUDIO] ERROR: SD.exists false for %s\n", path);
+    audioBusy = false;
+    return false;
+  }
 
   File audioFile = SD.open(path, FILE_READ);
   if (!audioFile) {
@@ -90,23 +103,29 @@ bool playAlertFile(const char* path) {
     return false;
   }
 
-  Serial.printf("[AUDIO] Playing: %s\n", path);
+  Serial.printf("[AUDIO] Playing: %s (size=%u)\n", path, static_cast<unsigned>(audioFile.size()));
+  Serial.printf("[AUDIO] Settling power rail for %lu ms\n", AUDIO_POWER_SETTLE_MS);
+  delay(AUDIO_POWER_SETTLE_MS);
 
   decodedStream.begin();
   StreamCopy copier(decodedStream, audioFile, 2048);
+  logAudioHeap("after-begin");
 
   while (audioFile.available()) {
     copier.copy();
+    delay(1);
   }
 
   decodedStream.end();
   audioFile.close();
+  delay(20);
 
   lastPlayedFile = String(path);
   lastAlertPlayAt = millis();
   audioBusy = false;
 
   Serial.println("[AUDIO] Playback finished");
+  logAudioHeap("after-playback");
   return true;
 }
 
@@ -121,7 +140,7 @@ void playQueuedAlerts() {
   for (int i = 0; i < alertCount; i++) {
     Serial.printf("[ALERT] Playing %d/%d : %s\n", i + 1, alertCount, alertQueue[i].c_str());
     playAlertFile(alertQueue[i].c_str());
-    delay(150);
+    delay(ALERT_GAP_MS);
   }
 
   clearAlertQueue();

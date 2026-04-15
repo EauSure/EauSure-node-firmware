@@ -13,9 +13,12 @@
 // =====================================================
 void initOtaaManager();
 void otaaTick();
+bool shouldPauseBackgroundWork();
 
 // Manual trigger (serial 'm' key)
 void requestMeasureNow();
+void notifyMeasureRequestDispatched();
+void notifyMeasureResponseHandled();
 
 // =====================================================
 // Incoming frame handlers — called from lora_radio.cpp

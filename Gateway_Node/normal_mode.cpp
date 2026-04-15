@@ -4,6 +4,7 @@
 #include "app_state.h"
 #include "lora_radio.h"
 #include "audio_alert.h"
+#include "sd_logger.h"
 #include "telemetry.h"
 #include "wifi_manager.h"
 #include "otaa_manager.h"
@@ -66,6 +67,14 @@ void begin() {
   if (!initLoRa()) {
     Serial.println("[FATAL] LoRa init failed");
     while (true) delay(100);
+  }
+
+  if (!initSD()) {
+    Serial.println("[WARN] SD init failed - alert WAV playback will be unavailable");
+  }
+
+  if (!initAudio()) {
+    Serial.println("[WARN] Audio init failed - alert WAV playback will be unavailable");
   }
 
   Serial.println("\n==============================================");

@@ -19,6 +19,7 @@ String gEventTopic;
 
 uint32_t gLastConnectAttemptMs = 0;
 bool gSubscribed = false;
+bool gExclusiveTlsWindow = false;
 
 String getGatewayHardwareIdString() {
   String mac = WiFiManager::getMacAddress();
@@ -111,6 +112,10 @@ void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 bool connectBroker() {
+  if (gExclusiveTlsWindow) {
+    return false;
+  }
+
   if (!ensureWifiReady()) {
     Serial.println("[MQTT] WiFi not ready");
     return false;
@@ -181,6 +186,16 @@ void begin() {
 }
 
 void loop() {
+  if (gExclusiveTlsWindow) {
+    if (gMqttClient.connected()) {
+      Serial.println("[MQTT] Exclusive TLS window requested — disconnecting broker session");
+      gMqttClient.disconnect();
+    }
+    gSubscribed = false;
+    delay(10);
+    return;
+  }
+
   if (!connectBroker()) {
     delay(10);
     return;
@@ -192,6 +207,24 @@ void loop() {
 
 bool isConnected() {
   return gMqttClient.connected();
+}
+
+void setExclusiveTlsWindow(bool enabled) {
+  if (enabled == gExclusiveTlsWindow) {
+    return;
+  }
+
+  gExclusiveTlsWindow = enabled;
+  if (enabled) {
+    if (gMqttClient.connected()) {
+      Serial.println("[MQTT] Pausing MQTT for exclusive TLS operation");
+      gMqttClient.disconnect();
+    }
+    gSubscribed = false;
+  } else {
+    Serial.println("[MQTT] Exclusive TLS window released");
+    gLastConnectAttemptMs = 0;
+  }
 }
 
 bool publishEvent(const String& eventName, const String& payloadJson) {

@@ -3,6 +3,29 @@
 #include "otaa_manager.h"
 #include "config.h"
 
+namespace {
+constexpr uint32_t kCloudSubmitHeapFloor = 30000;
+constexpr uint32_t kAudioPlaybackHeapFloor = 22000;
+
+bool heapReadyForTask(const char* taskName, uint32_t floorBytes) {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t minHeap  = ESP.getMinFreeHeap();
+
+  Serial.printf("[SYS][HEAP] pretask=%s free=%lu min=%lu floor=%lu\n",
+                taskName,
+                (unsigned long)freeHeap,
+                (unsigned long)minHeap,
+                (unsigned long)floorBytes);
+
+  if (freeHeap >= floorBytes) {
+    return true;
+  }
+
+  Serial.printf("[SYS][HEAP] optimization required before %s — task deferred\n", taskName);
+  return false;
+}
+}
+
 static String getNodeIdString() {
   uint32_t nodeId = getPairedNodeDeviceId();
   if (nodeId == 0) {
@@ -152,22 +175,44 @@ void handleDataPayload(const char *json, int rssi, float snr) {
     startAlarm();
 
     // POST to cloud immediately with e=SHAKE
-    submitToCloud(doc, seq, rssi, snr);
+    if (heapReadyForTask("cloud-submit", kCloudSubmitHeapFloor)) {
+      submitToCloud(doc, seq, rssi, snr);
+    } else {
+      Serial.println("[Telemetry] Skipping cloud submit for SHAKE frame due low heap");
+    }
 
     // Queue fall audio alert and play
     collectAlertFiles(doc, rssi);
-    playQueuedAlerts();
+    if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
+      playQueuedAlerts();
+    } else {
+      Serial.println("[Telemetry] Skipping queued alerts due low heap");
+      clearAlertQueue();
+    }
 
     // Follow-up MEASURE_REQ — get fresh sensor state after the event
     Serial.println("[Telemetry] Sending follow-up MEASURE_REQ after shake");
-    if (!sendMeasureReq()) {
+    if (sendMeasureReq()) {
+      notifyMeasureRequestDispatched();
+    } else {
       Serial.println("[Telemetry] Follow-up MEASURE_REQ failed");
     }
     return;
   }
 
   // ── MEASURE_RESP path ──
+  notifyMeasureResponseHandled();
   collectAlertFiles(doc, rssi);
-  playQueuedAlerts();
-  submitToCloud(doc, seq, rssi, snr);
+  if (heapReadyForTask("cloud-submit", kCloudSubmitHeapFloor)) {
+    submitToCloud(doc, seq, rssi, snr);
+  } else {
+    Serial.println("[Telemetry] Skipping cloud submit for this frame due low heap");
+  }
+
+  if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
+    playQueuedAlerts();
+  } else {
+    Serial.println("[Telemetry] Skipping queued alerts due low heap");
+    clearAlertQueue();
+  }
 }

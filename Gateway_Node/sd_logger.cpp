@@ -12,20 +12,42 @@ bool initSD() {
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
 
-  sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  delay(20);
+  constexpr uint32_t kSdClockCandidatesHz[] = {
+    8000000,
+    4000000,
+    1000000,
+  };
 
-  if (!SD.begin(SD_CS, sdSPI, 8000000)) {
-    Serial.println("[SD] ERROR: SD.begin failed at 8 MHz. Retrying at 4 MHz...");
+  bool mounted = false;
+  uint32_t selectedClockHz = 0;
 
-    if (!SD.begin(SD_CS, sdSPI, 4000000)) {
-      Serial.println("[SD] ERROR: SD.begin failed completely");
-      return false;
+  for (uint32_t clockHz : kSdClockCandidatesHz) {
+    sdSPI.end();
+    delay(10);
+    sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+    delay(30);
+
+    Serial.printf("[SD] Trying SD.begin on separate SPI bus at %lu MHz...\n",
+                  (unsigned long)(clockHz / 1000000));
+
+    if (!SD.begin(SD_CS, sdSPI, clockHz)) {
+      Serial.printf("[SD] SD.begin failed at %lu MHz\n",
+                    (unsigned long)(clockHz / 1000000));
+      continue;
     }
-    Serial.println("[SD] Ready on separate SPI bus (4 MHz)");
-  } else {
-    Serial.println("[SD] Ready on separate SPI bus (8 MHz)");
+
+    mounted = true;
+    selectedClockHz = clockHz;
+    break;
   }
+
+  if (!mounted) {
+    Serial.println("[SD] ERROR: SD.begin failed completely after 8/4/1 MHz attempts");
+    return false;
+  }
+
+  Serial.printf("[SD] Ready on separate SPI bus (%lu MHz)\n",
+                (unsigned long)(selectedClockHz / 1000000));
 
   uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {

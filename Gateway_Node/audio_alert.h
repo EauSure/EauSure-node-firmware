@@ -22,6 +22,8 @@ extern bool audioBusy;
 extern String lastPlayedFile;
 extern unsigned long lastAlertPlayAt;
 static const unsigned long ALERT_COOLDOWN_MS = 15000;
+static const unsigned long AUDIO_POWER_SETTLE_MS = 250;
+static const unsigned long ALERT_GAP_MS = 400;
 
 // =====================================================
 // Multi-alert Queue

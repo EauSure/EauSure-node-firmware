@@ -1,10 +1,57 @@
 #include "wifi_manager.h"
+#include "mqtt_gateway.h"
 
 namespace WiFiManager {
 
     namespace {
         String gSsid = "";
         String gPassword = "";
+
+        String extractHostFromUrl(const String& url) {
+            int start = 0;
+            if (url.startsWith("https://")) start = 8;
+            else if (url.startsWith("http://")) start = 7;
+
+            int slash = url.indexOf('/', start);
+            if (slash < 0) return url.substring(start);
+            return url.substring(start, slash);
+        }
+
+        void printHeapStats() {
+            Serial.printf("[WiFi][DIAG] Free heap: %u\n", ESP.getFreeHeap());
+            Serial.printf("[WiFi][DIAG] Min free heap: %u\n", ESP.getMinFreeHeap());
+        }
+
+        void printDnsLookup(const String& host) {
+            IPAddress resolved;
+            if (WiFi.hostByName(host.c_str(), resolved)) {
+                Serial.printf("[WiFi][DIAG] DNS %s -> %s\n", host.c_str(), resolved.toString().c_str());
+            } else {
+                Serial.printf("[WiFi][DIAG] DNS FAILED for %s\n", host.c_str());
+            }
+        }
+
+        bool rawTcpConnectTest(const String& host, uint16_t port) {
+            WiFiClient client;
+            client.setTimeout(5000);
+            Serial.printf("[WiFi][DIAG] raw TCP connect -> %s:%u\n", host.c_str(), port);
+            bool ok = client.connect(host.c_str(), port);
+            Serial.printf("[WiFi][DIAG] raw TCP connect: %s\n", ok ? "OK" : "FAIL");
+            if (ok) client.stop();
+            return ok;
+        }
+
+        bool rawTlsConnectTest(const String& host, uint16_t port) {
+            WiFiClientSecure client;
+            client.setInsecure();
+            client.setTimeout(10000);
+            client.setHandshakeTimeout(15);
+            Serial.printf("[WiFi][DIAG] raw TLS connect -> %s:%u\n", host.c_str(), port);
+            bool ok = client.connect(host.c_str(), port);
+            Serial.printf("[WiFi][DIAG] raw TLS connect: %s\n", ok ? "OK" : "FAIL");
+            if (ok) client.stop();
+            return ok;
+        }
     }
 
     bool init(const char* ssid, const char* password) {
@@ -107,15 +154,41 @@ namespace WiFiManager {
             }
         }
 
-        HTTPClient http;
+        String url = API_URL;
+        String host = extractHostFromUrl(url);
+        Serial.println();
+        Serial.println("[WiFi][DIAG] ===== Sensor Submit begin =====");
+        Serial.println("[WiFi][DIAG] URL: " + url);
+        Serial.println("[WiFi][DIAG] Host: " + host);
+        Serial.printf("[WiFi][DIAG] WiFi status: %d\n", (int)WiFi.status());
+        Serial.printf("[WiFi][DIAG] Local IP: %s\n", WiFi.localIP().toString().c_str());
+        printHeapStats();
+        printDnsLookup(host);
+        MqttGateway::setExclusiveTlsWindow(true);
+        rawTcpConnectTest(host, 443);
+        rawTlsConnectTest(host, 443);
 
-        if (!http.begin(API_URL)) {
+        WiFiClientSecure client;
+        client.setInsecure();
+        client.setTimeout(10000);
+        client.setHandshakeTimeout(15);
+
+        HTTPClient http;
+        http.setReuse(false);
+        http.useHTTP10(true);
+        http.setTimeout(10000);
+        http.setConnectTimeout(10000);
+
+        Serial.println("[WiFi][DIAG] http.begin -> " + url);
+        if (!http.begin(client, url)) {
             Serial.println("[WiFi] Failed to begin HTTP connection");
+            MqttGateway::setExclusiveTlsWindow(false);
             return false;
         }
 
         http.addHeader("Content-Type", "application/json");
         http.addHeader("X-Gateway-Key", API_KEY);
+        http.addHeader("Connection", "close");
         http.setTimeout(HTTP_TIMEOUT_MS);
 
         String payload = "{";
@@ -170,6 +243,8 @@ namespace WiFiManager {
         }
 
         http.end();
+        MqttGateway::setExclusiveTlsWindow(false);
+        Serial.println("[WiFi][DIAG] ===== Sensor Submit end =====");
         return success;
     }
 

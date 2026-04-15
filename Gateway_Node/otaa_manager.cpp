@@ -14,11 +14,17 @@ namespace {
   uint32_t gLastMeasureAt   = 0;
   uint32_t gLastHeartbeatAt = 0;
   uint32_t gLastActivateAt  = 0;
+  uint32_t gLastReplyRxAt   = 0;
+  uint32_t gHeartbeatPendingAt = 0;
+  uint32_t gMeasurePendingAt = 0;
 
   uint32_t gLastCommandTxAt = 0;
   static const uint32_t COMMAND_GAP_MS = 300;
+  static const uint32_t REPLY_SETTLE_GAP_MS = 400;
 
   bool     gActivatePending = true;   // true until first ACTIVATE_OK received
+  bool     gHeartbeatPending = false; // true after HEARTBEAT_REQ until HEARTBEAT_ACK or timeout
+  bool     gMeasurePending  = false;  // true after MEASURE_REQ until MEASURE_RESP or timeout
 
   // How long to wait between ACTIVATE retries at boot (ms)
   static const uint32_t ACTIVATE_RETRY_MS  = 8000;
@@ -26,6 +32,8 @@ namespace {
   static const uint32_t MEASURE_INTERVAL_MS   = 60000;
   // Heartbeat interval
   static const uint32_t HEARTBEAT_INTERVAL_MS = 15000;
+  static const uint32_t HEARTBEAT_RESPONSE_TIMEOUT_MS = 8000;
+  static const uint32_t MEASURE_RESPONSE_TIMEOUT_MS = 12000;
 }
 
 // =====================================================
@@ -42,6 +50,11 @@ void initOtaaManager() {
   gLastMeasureAt   = millis();   // avoid immediate MEASURE_REQ before pairing
   gLastHeartbeatAt = millis();
   gLastActivateAt  = 0;          // force first attempt immediately in otaaTick
+  gLastReplyRxAt   = 0;
+  gHeartbeatPending = false;
+  gHeartbeatPendingAt = 0;
+  gMeasurePending  = false;
+  gMeasurePendingAt = 0;
 
   Serial.println("[OTAA] Manager ready — will send ACTIVATE on first tick");
 }
@@ -53,6 +66,10 @@ void initOtaaManager() {
 // =====================================================
 void otaaTick() {
   const uint32_t now = millis();
+  const uint32_t schedulerGapMs =
+      (gLastReplyRxAt != 0 && (now - gLastReplyRxAt) < REPLY_SETTLE_GAP_MS)
+          ? REPLY_SETTLE_GAP_MS
+          : COMMAND_GAP_MS;
 
   if (isGatewayCommandInFlight()) {
     return;
@@ -62,7 +79,8 @@ void otaaTick() {
   // Retry every ACTIVATE_RETRY_MS until ACTIVATE_OK received.
   if (gActivatePending) {
     if ((now - gLastActivateAt >= ACTIVATE_RETRY_MS) &&
-        (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+        (now - gLastCommandTxAt >= schedulerGapMs) &&
+        (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
       gLastActivateAt = now;
       Serial.println("[OTAA] Sending ACTIVATE...");
       gLastCommandTxAt = now;
@@ -75,12 +93,40 @@ void otaaTick() {
     return;   // don't send MEASURE_REQ or HEARTBEAT until paired
   }
 
+  if (gMeasurePending) {
+    if (now - gMeasurePendingAt >= MEASURE_RESPONSE_TIMEOUT_MS) {
+      Serial.printf("[OTAA] MEASURE_RESP timeout after %lu ms — releasing scheduler\n",
+                    (unsigned long)(now - gMeasurePendingAt));
+      gMeasurePending = false;
+      gMeasurePendingAt = 0;
+    } else {
+      return;
+    }
+  }
+
+  if (gHeartbeatPending) {
+    if (now - gHeartbeatPendingAt >= HEARTBEAT_RESPONSE_TIMEOUT_MS) {
+      Serial.printf("[OTAA] HEARTBEAT_ACK timeout after %lu ms — releasing scheduler\n",
+                    (unsigned long)(now - gHeartbeatPendingAt));
+      gHeartbeatPending = false;
+      gHeartbeatPendingAt = 0;
+    } else {
+      return;
+    }
+  }
+
   // ── Phase 2: Periodic HEARTBEAT ──
   if ((now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) &&
-      (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+      (now - gLastCommandTxAt >= schedulerGapMs) &&
+      (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
     gLastHeartbeatAt = now;
     gLastCommandTxAt = now;
-    if (!sendHeartbeatReq()) {
+    if (sendHeartbeatReq()) {
+      gHeartbeatPending = true;
+      gHeartbeatPendingAt = millis();
+      Serial.printf("[OTAA] HEARTBEAT_REQ in progress — scheduler paused at t=%lu ms\n",
+                    (unsigned long)gHeartbeatPendingAt);
+    } else {
       Serial.println("[OTAA] HEARTBEAT_REQ failed — node may be unreachable");
     }
     return;
@@ -88,15 +134,26 @@ void otaaTick() {
 
   // ── Phase 3: Periodic MEASURE_REQ ──
   if ((now - gLastMeasureAt >= MEASURE_INTERVAL_MS) &&
-      (now - gLastCommandTxAt >= COMMAND_GAP_MS)) {
+      (now - gLastCommandTxAt >= schedulerGapMs) &&
+      (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
     gLastCommandTxAt = now;
     gLastMeasureAt = now;
     Serial.println("[OTAA] Auto MEASURE_REQ (60 s interval)");
-    if (!sendMeasureReq()) {
+    if (sendMeasureReq()) {
+      notifyMeasureRequestDispatched();
+    } else {
       Serial.println("[OTAA] MEASURE_REQ failed");
     }
     return;
   }
+}
+
+bool shouldPauseBackgroundWork() {
+  if (isGatewayCommandInFlight()) {
+    return true;
+  }
+
+  return gActivatePending || gHeartbeatPending || gMeasurePending;
 }
 
 // =====================================================
@@ -114,12 +171,43 @@ void requestMeasureNow() {
     return;
   }
 
+  if (gHeartbeatPending) {
+    Serial.println("[OTAA] Cannot measure now — waiting for current HEARTBEAT_ACK");
+    return;
+  }
+
+  if (gMeasurePending) {
+    Serial.println("[OTAA] Cannot measure now — waiting for current MEASURE_RESP");
+    return;
+  }
+
   Serial.println("[OTAA] Manual MEASURE_REQ triggered");
   gLastMeasureAt = millis();   // reset auto-timer so we don't double-fire
   gLastCommandTxAt = millis();
-  if (!sendMeasureReq()) {
+  if (sendMeasureReq()) {
+    notifyMeasureRequestDispatched();
+  } else {
     Serial.println("[OTAA] Manual MEASURE_REQ failed");
   }
+}
+
+void notifyMeasureRequestDispatched() {
+  gMeasurePending = true;
+  gMeasurePendingAt = millis();
+  Serial.printf("[OTAA] MEASURE_REQ in progress — scheduler paused at t=%lu ms\n",
+                (unsigned long)gMeasurePendingAt);
+}
+
+void notifyMeasureResponseHandled() {
+  if (!gMeasurePending) {
+    return;
+  }
+
+  gMeasurePending = false;
+  gLastReplyRxAt = millis();
+  Serial.printf("[OTAA] MEASURE_RESP received after %lu ms — scheduler resumed\n",
+                (unsigned long)(millis() - gMeasurePendingAt));
+  gMeasurePendingAt = 0;
 }
 
 // =====================================================
@@ -141,12 +229,17 @@ void handleActivateOk(const char *json, int rssi, float snr) {
   gNodeActive      = (state == "active");
   gNodeMac         = mac;
   gActivatePending = false;
+  gHeartbeatPending = false;
+  gHeartbeatPendingAt = 0;
+  gMeasurePending  = false;
+  gMeasurePendingAt = 0;
 
   lastAcceptedSeq  = 0;
 
   // Kick off timers from now so we don't immediately fire
   gLastMeasureAt   = millis();
   gLastHeartbeatAt = millis();
+  gLastReplyRxAt   = millis();
 
   Serial.printf("[OTAA] ACTIVATE_OK — node paired! mac=%s state=%s RSSI=%d SNR=%.1f\n",
                 mac.c_str(), state.c_str(), rssi, snr);
@@ -168,6 +261,13 @@ void handleHeartbeatAck(const char *json, int rssi, float snr) {
   int    batt  = doc["batt"]  | -1;
   String state = doc["state"] | "unknown";
   gNodeActive  = (state == "active");
+  if (gHeartbeatPending) {
+    gHeartbeatPending = false;
+    gLastReplyRxAt = millis();
+    Serial.printf("[OTAA] HEARTBEAT_ACK received after %lu ms — scheduler resumed\n",
+                  (unsigned long)(millis() - gHeartbeatPendingAt));
+    gHeartbeatPendingAt = 0;
+  }
 
   Serial.printf("[OTAA] HEARTBEAT_ACK — batt=%d%% state=%s RSSI=%d SNR=%.1f\n",
                 batt, state.c_str(), rssi, snr);
@@ -177,5 +277,9 @@ void handleHeartbeatAck(const char *json, int rssi, float snr) {
     Serial.println("[OTAA] Node inactive — triggering re-ACTIVATE");
     gActivatePending = true;
     gLastActivateAt  = 0;  // force envoi immédiat au prochain tick
+    gHeartbeatPending = false;
+    gHeartbeatPendingAt = 0;
+    gMeasurePending  = false;
+    gMeasurePendingAt = 0;
   }
 }

@@ -4,6 +4,7 @@
 #include "node_pairing_mode.h"
 #include "node_pairing_store.h"
 #include "mqtt_gateway.h"
+#include "otaa_manager.h"
 
 enum class BootMode {
   PROVISIONING,
@@ -82,7 +83,9 @@ void loop() {
       break;
 
     case BootMode::NORMAL:
-      MqttGateway::loop();
+      if (!shouldPauseBackgroundWork()) {
+        MqttGateway::loop();
+      }
       NormalMode::loop();
       break;
   }
