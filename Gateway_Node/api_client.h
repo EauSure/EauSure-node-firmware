@@ -23,6 +23,16 @@ struct PairingTokenResult {
   String pairingToken;
 };
 
+struct PendingPairingKeyResult {
+  bool success = false;
+  bool found = false;
+  int httpCode = 0;
+  String message;
+  String commandId;
+  String nodeId;
+  String aesKey;
+};
+
 namespace ApiClient {
 
 bool healthCheck(const String& apiBaseUrl);
@@ -53,6 +63,19 @@ bool verifyNodeProof(
   const String& nonce,
   const String& proof,
   PairingTokenResult& out
+);
+
+bool fetchPendingPairingKey(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  const String& expectedNodeId,
+  PendingPairingKeyResult& out
+);
+
+bool ackCommand(
+  const String& apiBaseUrl,
+  const String& commandId,
+  ApiBasicResult& out
 );
 
 } // namespace ApiClient

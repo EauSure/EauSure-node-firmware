@@ -60,7 +60,11 @@ void setup() {
 
   if (!PairingStore::hasPairing()) {
     gMode = BootMode::PAIRING;
-    Serial.println("[BOOT] No pairing found -> WIFI PAIRING AP mode");
+    if (PairingStore::hasPendingProvision()) {
+      Serial.println("[BOOT] Pending provision found -> RESUME WIFI PAIRING in STA mode");
+    } else {
+      Serial.println("[BOOT] No pairing found -> WIFI PAIRING AP mode");
+    }
     PairingMode::begin();
     return;
   }

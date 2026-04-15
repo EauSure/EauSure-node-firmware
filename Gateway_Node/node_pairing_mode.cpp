@@ -10,7 +10,7 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 
-static const uint32_t WAIT_KEY_TIMEOUT_MS = 30000;
+static const uint32_t WAIT_KEY_TIMEOUT_MS = 60000;
 static const uint32_t API_ROLLBACK_RETRY_MS = 2000;
 static const char* NODE_AP_PREFIX = "IOT-";
 static const char* NODE_AP_BASE_URL = "http://192.168.4.1";
@@ -56,8 +56,11 @@ String gChallengeProof = "";
 GatewayProvisionResult gProvisionResult;
 PairingTokenResult gPairingTokenResult;
 ApiBasicResult gRollbackResult;
+ApiBasicResult gAckResult;
+PendingPairingKeyResult gPendingKeyPollResult;
 uint32_t gStateAtMs = 0;
 uint32_t gRetryAtMs = 0;
+uint32_t gLastWaitKeyLogMs = 0;
 
 String getGatewayHardwareIdString() {
   String mac = WiFiManager::getMacAddress();
@@ -280,6 +283,10 @@ bool fetchNodeProof() {
     }
     int code = http.GET();
     String response = (code > 0) ? http.getString() : "";
+    Serial.printf("[PAIRING][HTTP] GET /identity code=%d\n", code);
+    if (!response.isEmpty()) {
+      Serial.printf("[PAIRING][HTTP] /identity response=%s\n", response.c_str());
+    }
     http.end();
     if (code <= 0) {
       errorMessage = "identity request failed";
@@ -314,6 +321,10 @@ bool fetchNodeProof() {
     http.addHeader("Content-Type", "application/json");
     code = http.POST(body);
     response = (code > 0) ? http.getString() : "";
+    Serial.printf("[PAIRING][HTTP] POST /prove code=%d nonce=%s\n", code, gChallengeNonce.c_str());
+    if (!response.isEmpty()) {
+      Serial.printf("[PAIRING][HTTP] /prove response=%s\n", response.c_str());
+    }
     http.end();
     if (code <= 0) {
       errorMessage = "prove request failed";
@@ -371,6 +382,43 @@ bool requestPairingToken() {
   return true;
 }
 
+bool pollPendingPairingKey() {
+  if (!ensureHomeWifiReady()) return false;
+
+  PendingPairingKeyResult result;
+  bool ok = ApiClient::fetchPendingPairingKey(
+    API_BASE_URL,
+    getGatewayHardwareIdString(),
+    gTargetNodeId,
+    result
+  );
+
+  gPendingKeyPollResult = result;
+  if (!ok) return false;
+  if (!result.found) return true;
+
+  if (result.nodeId != gTargetNodeId || result.aesKey.isEmpty()) {
+    Serial.println("[PAIRING][API] Pending PAIRING_KEY_READY command was incomplete or mismatched");
+    return true;
+  }
+
+  gReceivedAesKey = result.aesKey;
+  Serial.printf("[PAIRING][API] Retrieved PAIRING_KEY_READY from pending queue for node=%s\n",
+                result.nodeId.c_str());
+
+  if (!result.commandId.isEmpty()) {
+    if (!ApiClient::ackCommand(API_BASE_URL, result.commandId, gAckResult)) {
+      Serial.printf("[PAIRING][API] Failed acking command %s: %s\n",
+                    result.commandId.c_str(),
+                    gAckResult.message.c_str());
+    } else {
+      Serial.printf("[PAIRING][API] Acked pending command %s\n", result.commandId.c_str());
+    }
+  }
+
+  return true;
+}
+
 bool sendProvisionToNode() {
   ProvisioningData prov = WifiStore::load();
   if (!prov.valid || gPendingPairingToken.isEmpty()) return false;
@@ -404,6 +452,10 @@ bool sendProvisionToNode() {
     http.addHeader("Content-Type", "application/json");
     int code = http.POST(body);
     String response = (code > 0) ? http.getString() : "";
+    Serial.printf("[PAIRING][HTTP] POST /provision code=%d\n", code);
+    if (!response.isEmpty()) {
+      Serial.printf("[PAIRING][HTTP] /provision response=%s\n", response.c_str());
+    }
     http.end();
     if (code <= 0) {
       errorMessage = "provision request failed";
@@ -574,6 +626,8 @@ void loop() {
         break;
       }
       gRollbackNeeded = true;
+      gLastWaitKeyLogMs = millis();
+      Serial.println("[PAIRING] Waiting for PAIRING_KEY_READY over MQTT...");
       gState = PairState::WAIT_KEY_READY;
       gStateAtMs = millis();
       break;
@@ -589,6 +643,20 @@ void loop() {
       } else if (millis() - gStateAtMs > WAIT_KEY_TIMEOUT_MS) {
         failAndReturnToScan("Timed out waiting for PAIRING_KEY_READY", true);
       } else {
+        if (millis() - gLastWaitKeyLogMs > 5000) {
+          gLastWaitKeyLogMs = millis();
+          Serial.printf("[PAIRING] Still waiting for PAIRING_KEY_READY... elapsed=%lu ms\n",
+                        (unsigned long)(millis() - gStateAtMs));
+          if (!pollPendingPairingKey()) {
+            Serial.printf("[PAIRING][API] Pending command poll failed: %s\n",
+                          gPendingKeyPollResult.message.c_str());
+          }
+          if (!gReceivedAesKey.isEmpty()) {
+            gState = PairState::SAVE_LOCAL;
+            gStateAtMs = millis();
+            break;
+          }
+        }
         delay(150);
       }
       break;

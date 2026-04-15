@@ -9,13 +9,16 @@ static String getNodeIdString() {
     return String("unpaired");
   }
 
-  char buf[11];
-  snprintf(buf, sizeof(buf), "0x%08lX", (unsigned long)nodeId);
+  char buf[9];
+  snprintf(buf, sizeof(buf), "%08lX", (unsigned long)nodeId);
   return String(buf);
 }
 
 static String getGatewayHardwareIdString() {
-  return WiFiManager::getMacAddress();
+  String mac = WiFiManager::getMacAddress();
+  mac.replace(":", "");
+  mac.toUpperCase();
+  return mac;
 }
 // =====================================================
 // collectAlertFiles — queue WAV alerts based on payload

@@ -370,4 +370,120 @@ bool verifyNodeProof(
   return true;
 }
 
+bool fetchPendingPairingKey(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  const String& expectedNodeId,
+  PendingPairingKeyResult& out
+) {
+  out = PendingPairingKeyResult{};
+
+  if (apiBaseUrl.isEmpty()) {
+    out.message = "API base URL is empty";
+    return false;
+  }
+  if (gatewayHardwareId.isEmpty()) {
+    out.message = "Gateway hardware ID is empty";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/gateway/heartbeat";
+
+  StaticJsonDocument<192> req;
+  req["gatewayHardwareId"] = gatewayHardwareId;
+
+  String body;
+  serializeJson(req, body);
+
+  Serial.println("\n[API] POST " + url + " (heartbeat/pending)");
+
+  String response;
+  int code = httpsPost(url, body, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP POST failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<1024> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  out.message = String(resp["message"] | "");
+  if (!out.success) return false;
+
+  JsonArray commands = resp["data"]["pendingCommands"].as<JsonArray>();
+  for (JsonObject cmd : commands) {
+    String type = String(cmd["cmd"] | "");
+    if (type != "PAIRING_KEY_READY") continue;
+
+    String nodeId = String(cmd["nodeId"] | "");
+    nodeId.toUpperCase();
+    if (!expectedNodeId.isEmpty()) {
+      String expected = expectedNodeId;
+      expected.toUpperCase();
+      if (nodeId != expected) continue;
+    }
+
+    JsonObject payload = cmd["payload"];
+    out.found = true;
+    out.commandId = String(cmd["cmdId"] | "");
+    out.nodeId = nodeId;
+    out.aesKey = String(payload["aesKey"] | cmd["aesKey"] | "");
+    return true;
+  }
+
+  return true;
+}
+
+bool ackCommand(
+  const String& apiBaseUrl,
+  const String& commandId,
+  ApiBasicResult& out
+) {
+  out = ApiBasicResult{};
+
+  if (apiBaseUrl.isEmpty()) {
+    out.message = "API base URL is empty";
+    return false;
+  }
+  if (commandId.isEmpty()) {
+    out.message = "Command ID is empty";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/command/ack";
+
+  StaticJsonDocument<96> req;
+  req["cmdId"] = commandId;
+
+  String body;
+  serializeJson(req, body);
+
+  Serial.println("\n[API] POST " + url + " (ack)");
+
+  String response;
+  int code = httpsPost(url, body, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP POST failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<256> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  out.message = String(resp["message"] | "");
+  return out.success;
+}
+
 } // namespace ApiClient

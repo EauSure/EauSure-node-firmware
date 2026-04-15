@@ -5,6 +5,7 @@
 #include "display_oled.h"
 
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -17,12 +18,20 @@ WebServer gServer(80);
 bool gComplete = false;
 bool gProvisionPending = false;
 bool gProvisionInProgress = false;
+bool gApRestartRequested = false;
+uint32_t gApRestartAtMs = 0;
+uint32_t gProvisionStartAtMs = 0;
+bool gRebootRequested = false;
+uint32_t gRebootAtMs = 0;
+bool gResumingPendingProvision = false;
 String gApSsid = "";
 String gApPassword = "";
 String gStatusTitle = "PAIRING";
 String gStatusLine1 = "Booting...";
 String gStatusLine2 = "";
 String gStatusLine3 = "";
+
+constexpr int8_t kPairingStaTxPowerQuarterDbm = 20;
 
 struct PairingProvisionPacket {
   String gatewayHardwareId;
@@ -35,6 +44,73 @@ struct PairingProvisionPacket {
 };
 
 PairingProvisionPacket gPendingProvisionPacket;
+
+const char* wifiReasonName(uint8_t reason) {
+  switch (reason) {
+    case 1: return "UNSPECIFIED";
+    case 2: return "AUTH_EXPIRE";
+    case 3: return "AUTH_LEAVE";
+    case 4: return "ASSOC_EXPIRE";
+    case 5: return "ASSOC_TOOMANY";
+    case 6: return "NOT_AUTHED";
+    case 7: return "NOT_ASSOCED";
+    case 8: return "ASSOC_LEAVE";
+    case 15: return "4WAY_HANDSHAKE_TIMEOUT";
+    case 201: return "NO_AP_FOUND";
+    case 202: return "AUTH_FAIL";
+    case 203: return "ASSOC_FAIL";
+    case 204: return "HANDSHAKE_TIMEOUT";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* wifiStatusName(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID";
+    case WL_SCAN_COMPLETED: return "SCAN_DONE";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* wifiModeName(wifi_mode_t mode) {
+  switch (mode) {
+    case WIFI_MODE_NULL: return "OFF";
+    case WIFI_MODE_STA: return "STA";
+    case WIFI_MODE_AP: return "AP";
+    case WIFI_MODE_APSTA: return "AP+STA";
+    default: return "UNKNOWN";
+  }
+}
+
+const char* authModeName(wifi_auth_mode_t mode) {
+  switch (mode) {
+    case WIFI_AUTH_OPEN: return "OPEN";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA_PSK";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2_PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA_WPA2_PSK";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2_ENTERPRISE";
+    case WIFI_AUTH_WPA3_PSK: return "WPA3_PSK";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2_WPA3_PSK";
+    case WIFI_AUTH_WAPI_PSK: return "WAPI_PSK";
+    default: return "UNKNOWN";
+  }
+}
+
+void logWifiSnapshot(const char* stage) {
+  Serial.printf("[PAIRING][WIFI] Snapshot stage=%s mode=%s status=%s (%d) staIP=%s apIP=%s\n",
+                stage,
+                wifiModeName(WiFi.getMode()),
+                wifiStatusName(WiFi.status()),
+                WiFi.status(),
+                WiFi.localIP().toString().c_str(),
+                WiFi.softAPIP().toString().c_str());
+}
 
 void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   switch (event) {
@@ -49,12 +125,21 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
       break;
     case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
       Serial.printf("[PAIRING][WIFI] STA disconnected from SoftAP aid=%u\n", info.wifi_ap_stadisconnected.aid);
+      if (!gProvisionPending && !gProvisionInProgress && !gComplete) {
+        gApRestartRequested = true;
+        gApRestartAtMs = millis() + 500;
+        Serial.println("[PAIRING][WIFI] Scheduling SoftAP refresh after client disconnect");
+      } else {
+        Serial.println("[PAIRING][WIFI] Skipping SoftAP refresh because provisioning is active");
+      }
       break;
     case ARDUINO_EVENT_WIFI_STA_CONNECTED:
       Serial.println("[PAIRING][WIFI] Node STA connected to upstream WiFi");
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.printf("[PAIRING][WIFI] Node STA disconnected reason=%d\n", info.wifi_sta_disconnected.reason);
+      Serial.printf("[PAIRING][WIFI] Node STA disconnected reason=%d (%s)\n",
+                    info.wifi_sta_disconnected.reason,
+                    wifiReasonName(info.wifi_sta_disconnected.reason));
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.printf("[PAIRING][WIFI] Node STA got IP %s\n", WiFi.localIP().toString().c_str());
@@ -160,31 +245,121 @@ bool parseProvisionPacket(const String& value, PairingProvisionPacket& out) {
   return out.valid;
 }
 
+PairingProvisionPacket toProvisionPacket(const PendingProvisionData& data) {
+  PairingProvisionPacket packet;
+  packet.gatewayHardwareId = data.gatewayHardwareId;
+  packet.nodeId = data.nodeId;
+  packet.wifiSsid = data.wifiSsid;
+  packet.wifiPassword = data.wifiPassword;
+  packet.apiBaseUrl = data.apiBaseUrl;
+  packet.pairingToken = data.pairingToken;
+  packet.valid = data.valid;
+  return packet;
+}
+
 void stopPairingApForProvisioning() {
   Serial.println("[PAIRING] Stopping SoftAP before home WiFi join");
+  logWifiSnapshot("before-softap-stop");
+  gApRestartRequested = false;
+  gApRestartAtMs = 0;
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) {
+    Serial.println("[PAIRING][WIFI] No SoftAP active, preparing pure STA join");
+    WiFi.mode(WIFI_OFF);
+    delay(300);
+    logWifiSnapshot("after-wifi-off");
+    return;
+  }
   gServer.stop();
   WiFi.softAPdisconnect(true);
-  delay(150);
+  delay(100);
+  logWifiSnapshot("after-softap-stop");
+  Serial.println("[PAIRING][WIFI] Powering WiFi radio down after SoftAP stop");
+  WiFi.mode(WIFI_OFF);
+  delay(300);
+  logWifiSnapshot("after-wifi-off");
 }
 
 bool connectWifiForPairing(const String& ssid, const String& password, String& errorOut) {
   errorOut = "";
   Serial.printf("[PAIRING] Connecting node STA to home WiFi SSID=%s\n", ssid.c_str());
   stopPairingApForProvisioning();
+  Serial.println("[PAIRING][WIFI] Resetting WiFi radio before STA join");
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(false, true);
-  delay(200);
+  delay(300);
+  logWifiSnapshot("before-home-prescan");
+
+  esp_err_t txPowerErr = esp_wifi_set_max_tx_power(kPairingStaTxPowerQuarterDbm);
+  if (txPowerErr == ESP_OK) {
+    int8_t actualTxPower = 0;
+    if (esp_wifi_get_max_tx_power(&actualTxPower) == ESP_OK) {
+      Serial.printf("[PAIRING][WIFI] TX power requested=%d qdBm actual=%d qdBm\n",
+                    kPairingStaTxPowerQuarterDbm,
+                    actualTxPower);
+    } else {
+      Serial.printf("[PAIRING][WIFI] TX power requested=%d qdBm\n",
+                    kPairingStaTxPowerQuarterDbm);
+    }
+  } else {
+    Serial.printf("[PAIRING][WIFI] Failed to set TX power err=0x%x\n",
+                  static_cast<unsigned>(txPowerErr));
+  }
+
+  int bestIndex = -1;
+  int bestRssi = -1000;
+  int networkCount = WiFi.scanNetworks(false, true);
+  if (networkCount > 0) {
+    for (int i = 0; i < networkCount; ++i) {
+      if (WiFi.SSID(i) != ssid) continue;
+      int rssi = WiFi.RSSI(i);
+      if (bestIndex < 0 || rssi > bestRssi) {
+        bestIndex = i;
+        bestRssi = rssi;
+      }
+    }
+  }
+
+  if (bestIndex >= 0) {
+    String bssid = WiFi.BSSIDstr(bestIndex);
+    int channel = WiFi.channel(bestIndex);
+    wifi_auth_mode_t authMode = WiFi.encryptionType(bestIndex);
+    Serial.printf("[PAIRING][WIFI] Found home AP ssid=%s bssid=%s channel=%d rssi=%d auth=%s (%d)\n",
+                  ssid.c_str(),
+                  bssid.c_str(),
+                  channel,
+                  bestRssi,
+                  authModeName(authMode),
+                  authMode);
+  } else {
+    Serial.printf("[PAIRING][WIFI] Home SSID '%s' not found in prescan, proceeding with plain WiFi.begin\n", ssid.c_str());
+  }
+  WiFi.scanDelete();
   WiFi.begin(ssid.c_str(), password.c_str());
+  Serial.printf("[PAIRING][WIFI] WiFi.begin issued in plain STA mode for SSID=%s\n", ssid.c_str());
+  logWifiSnapshot("after-wifi-begin");
 
   renderPairingScreen("PAIRING", "Joining home WiFi", ssid, "Please wait...");
   uint32_t start = millis();
+  wl_status_t lastStatus = static_cast<wl_status_t>(-1);
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < 15000) {
+    wl_status_t currentStatus = WiFi.status();
+    if (currentStatus != lastStatus) {
+      Serial.printf("[PAIRING][WIFI] STA status=%s (%d)\n",
+                    wifiStatusName(currentStatus),
+                    currentStatus);
+      lastStatus = currentStatus;
+    }
     delay(300);
   }
 
   if (WiFi.status() != WL_CONNECTED) {
     errorOut = "WiFi connect failed";
-    Serial.printf("[PAIRING] Home WiFi connection failed for SSID=%s\n", ssid.c_str());
+    Serial.printf("[PAIRING] Home WiFi connection failed for SSID=%s finalStatus=%s (%d)\n",
+                  ssid.c_str(),
+                  wifiStatusName(WiFi.status()),
+                  WiFi.status());
     renderPairingScreen("PAIRING", "WiFi failed", ssid, "Retry from gateway");
     return false;
   }
@@ -338,6 +513,8 @@ bool performProvisioningFlow(const PairingProvisionPacket& packet, String& error
     return false;
   }
 
+  PairingStore::clearPendingProvision();
+
   renderPairingScreen("PAIRING", "Pairing complete", "Restarting node", gatewayHardwareId);
   return true;
 }
@@ -400,7 +577,7 @@ void handleProvision() {
   Serial.printf("[PAIRING][DEBUG]   gatewayHardwareId=%s\n", packet.gatewayHardwareId.c_str());
   Serial.printf("[PAIRING][DEBUG]   nodeId=%s\n", packet.nodeId.c_str());
 
-  if (gProvisionInProgress || gProvisionPending) {
+  if (gProvisionInProgress || gProvisionPending || gRebootRequested) {
     StaticJsonDocument<256> resp;
     resp["success"] = false;
     resp["message"] = "Provisioning already in progress";
@@ -410,12 +587,25 @@ void handleProvision() {
     return;
   }
 
-  gPendingProvisionPacket = packet;
-  gProvisionPending = true;
+  PendingProvisionData pending;
+  pending.valid = true;
+  pending.gatewayHardwareId = packet.gatewayHardwareId;
+  pending.nodeId = packet.nodeId;
+  pending.wifiSsid = packet.wifiSsid;
+  pending.wifiPassword = packet.wifiPassword;
+  pending.apiBaseUrl = packet.apiBaseUrl;
+  pending.pairingToken = packet.pairingToken;
+
+  if (!PairingStore::savePendingProvision(pending)) {
+    gServer.send(500, "application/json", "{\"success\":false,\"message\":\"Failed to persist provision\"}");
+    return;
+  }
+
   Serial.printf("[PAIRING] Provision accepted for SSID=%s gateway=%s\n",
                 packet.wifiSsid.c_str(),
                 packet.gatewayHardwareId.c_str());
-  renderPairingScreen("PAIRING AP", "Provision accepted", packet.wifiSsid, "Starting...");
+  Serial.println("[PAIRING] Pending provision saved - scheduling reboot into pure STA mode");
+  renderPairingScreen("PAIRING AP", "Provision saved", packet.wifiSsid, "Rebooting...");
 
   StaticJsonDocument<256> resp;
   resp["success"] = true;
@@ -423,21 +613,27 @@ void handleProvision() {
   String payload;
   serializeJson(resp, payload);
   gServer.send(202, "application/json", payload);
+
+  gRebootRequested = true;
+  gRebootAtMs = millis() + 1200;
 }
 
 void startPairingAp() {
   gApSsid = String("IOT-") + getNodeIdString();
   gApPassword = deriveApPassword();
 
+  logWifiSnapshot("before-start-softap");
   WiFi.mode(WIFI_AP);
   WiFi.softAPdisconnect(true);
   delay(100);
+  logWifiSnapshot("after-softapdisconnect");
   if (!WiFi.softAP(gApSsid.c_str(), gApPassword.c_str())) {
     renderPairingScreen("PAIRING AP", "SoftAP failed", gApSsid, "Reboot required");
     Serial.printf("[PAIRING] SoftAP start failed for SSID=%s\n", gApSsid.c_str());
     return;
   }
   delay(100);
+  logWifiSnapshot("after-softap-start");
 
   IPAddress apIp = WiFi.softAPIP();
   renderPairingScreen("PAIRING AP", gApSsid, apIp.toString(), "Await MQTT confirm");
@@ -457,6 +653,12 @@ void begin() {
   gComplete = false;
   gProvisionPending = false;
   gProvisionInProgress = false;
+  gApRestartRequested = false;
+  gApRestartAtMs = 0;
+  gProvisionStartAtMs = 0;
+  gRebootRequested = false;
+  gRebootAtMs = 0;
+  gResumingPendingProvision = false;
   WiFi.onEvent(onWiFiEvent);
   Wire.begin(I2C_SDA, I2C_SCL);
   displayInit();
@@ -469,13 +671,55 @@ void begin() {
     return;
   }
 
+  if (PairingStore::hasPendingProvision()) {
+    PendingProvisionData pending = PairingStore::loadPendingProvision();
+    if (pending.valid) {
+      gPendingProvisionPacket = toProvisionPacket(pending);
+      gProvisionPending = true;
+      gProvisionStartAtMs = millis() + 300;
+      gResumingPendingProvision = true;
+      WiFi.mode(WIFI_OFF);
+      delay(100);
+      renderPairingScreen("PAIRING", "Resuming setup", pending.wifiSsid, "Pure STA mode");
+      Serial.printf("[PAIRING] Resuming pending provision after reboot for SSID=%s gateway=%s\n",
+                    pending.wifiSsid.c_str(),
+                    pending.gatewayHardwareId.c_str());
+      return;
+    }
+
+    Serial.println("[PAIRING] Pending provision record was invalid, clearing it");
+    PairingStore::clearPendingProvision();
+  }
+
   startPairingAp();
 }
 
 void loop() {
+  if (gRebootRequested) {
+    if ((int32_t)(millis() - gRebootAtMs) >= 0) {
+      Serial.println("[PAIRING] Rebooting to resume provisioning in pure STA mode");
+      delay(100);
+      ESP.restart();
+    }
+    delay(20);
+    return;
+  }
+
   gServer.handleClient();
 
+  if (gApRestartRequested && !gProvisionPending && !gProvisionInProgress && !gComplete) {
+    if ((int32_t)(millis() - gApRestartAtMs) >= 0) {
+      gApRestartRequested = false;
+      Serial.println("[PAIRING][WIFI] Refreshing SoftAP for next pairing step");
+      startPairingAp();
+    }
+  }
+
   if (gProvisionPending && !gProvisionInProgress) {
+    if ((int32_t)(millis() - gProvisionStartAtMs) < 0) {
+      delay(20);
+      return;
+    }
     gProvisionPending = false;
     gProvisionInProgress = true;
     Serial.println("[PAIRING] Starting asynchronous provisioning flow");
@@ -487,9 +731,15 @@ void loop() {
       Serial.printf("[PAIRING] Provisioning failed: %s\n", error.c_str());
       renderPairingScreen("PAIRING AP", "Provision failed", error, "Waiting retry");
       gProvisionInProgress = false;
+      if (gResumingPendingProvision) {
+        Serial.println("[PAIRING] Clearing pending provision after failed reboot-based resume");
+        PairingStore::clearPendingProvision();
+        gResumingPendingProvision = false;
+      }
       startPairingAp();
     } else {
       Serial.println("[PAIRING] Provisioning complete");
+      gResumingPendingProvision = false;
       gComplete = true;
     }
   }
@@ -505,6 +755,10 @@ void loop() {
 
 bool isComplete() {
   return gComplete;
+}
+
+bool isResumingPendingProvision() {
+  return gResumingPendingProvision;
 }
 
 } // namespace PairingMode
