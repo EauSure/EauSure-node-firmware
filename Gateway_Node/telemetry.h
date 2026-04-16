@@ -17,6 +17,8 @@
 // released from its retry loop when this runs.
 // =====================================================
 void handleDataPayload(const char *json, int rssi, float snr);
+void telemetryTick();
+bool telemetryHasPendingUpload();
 
 // =====================================================
 // Alert file collection (used internally)

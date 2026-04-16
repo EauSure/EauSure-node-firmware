@@ -1,11 +1,41 @@
 #include "telemetry.h"
 #include "wifi_manager.h"
+#include "mqtt_gateway.h"
 #include "otaa_manager.h"
 #include "config.h"
+#include <string.h>
 
 namespace {
-constexpr uint32_t kCloudSubmitHeapFloor = 30000;
+constexpr uint32_t kCloudSubmitPreferredHeapFloor = 30000;
+constexpr uint32_t kCloudSubmitEmergencyHeapFloor = 24000;
 constexpr uint32_t kAudioPlaybackHeapFloor = 22000;
+constexpr uint32_t kTelemetryRetryIntervalMs = 5000;
+constexpr size_t   kPendingTelemetryCapacity = 6;
+
+struct TelemetryRecord {
+  uint32_t seq;
+  uint8_t battery;
+  float voltage;
+  uint16_t current;
+  float pH;
+  uint8_t phStatus;
+  uint16_t tds;
+  uint8_t tdsStatus;
+  float turbidity;
+  uint8_t turbidityStatus;
+  float waterTemp;
+  float moduleTemp;
+  float esp32Temp;
+  int8_t rssi;
+  float snr;
+  char errorMsg[24];
+};
+
+TelemetryRecord gPendingTelemetry[kPendingTelemetryCapacity];
+size_t gPendingTelemetryHead = 0;
+size_t gPendingTelemetryTail = 0;
+size_t gPendingTelemetryCount = 0;
+uint32_t gLastTelemetryAttemptAt = 0;
 
 bool heapReadyForTask(const char* taskName, uint32_t floorBytes) {
   const uint32_t freeHeap = ESP.getFreeHeap();
@@ -22,6 +52,99 @@ bool heapReadyForTask(const char* taskName, uint32_t floorBytes) {
   }
 
   Serial.printf("[SYS][HEAP] optimization required before %s — task deferred\n", taskName);
+  return false;
+}
+
+void copyEventString(char* dest, size_t destLen, const char* src) {
+  if (destLen == 0) return;
+  if (!src) src = "None";
+
+  strncpy(dest, src, destLen - 1);
+  dest[destLen - 1] = '\0';
+}
+
+TelemetryRecord buildTelemetryRecord(JsonDocument& doc, uint32_t seq, int rssi, float snr) {
+  TelemetryRecord record;
+  memset(&record, 0, sizeof(record));
+  record.seq = seq;
+  record.battery = doc["b"] | 0;
+  record.voltage = doc["v"] | 0.0f;
+  record.current = doc["m"] | 0;
+  record.pH = doc["p"] | 0.0f;
+  record.phStatus = doc["ps"] | 0;
+  record.tds = doc["t"] | 0;
+  record.tdsStatus = doc["ts"] | 0;
+  record.turbidity = doc["u"] | 0.0f;
+  record.turbidityStatus = doc["us"] | 0;
+  record.waterTemp = doc["tw"] | 0.0f;
+  record.moduleTemp = doc["tm"] | 0.0f;
+  record.esp32Temp = doc["te"] | 0.0f;
+  record.rssi = (int8_t)rssi;
+  record.snr = snr;
+  copyEventString(record.errorMsg, sizeof(record.errorMsg), doc["e"] | "None");
+  return record;
+}
+
+void popPendingTelemetry() {
+  if (gPendingTelemetryCount == 0) return;
+
+  gPendingTelemetryHead = (gPendingTelemetryHead + 1) % kPendingTelemetryCapacity;
+  --gPendingTelemetryCount;
+}
+
+void enqueueTelemetryRecord(const TelemetryRecord& record) {
+  if (gPendingTelemetryCount == kPendingTelemetryCapacity) {
+    const TelemetryRecord& dropped = gPendingTelemetry[gPendingTelemetryHead];
+    Serial.printf("[Telemetry] Queue full — dropping oldest pending seq=%lu to keep latest data flowing\n",
+                  (unsigned long)dropped.seq);
+    popPendingTelemetry();
+  }
+
+  gPendingTelemetry[gPendingTelemetryTail] = record;
+  gPendingTelemetryTail = (gPendingTelemetryTail + 1) % kPendingTelemetryCapacity;
+  ++gPendingTelemetryCount;
+
+  Serial.printf("[Telemetry] Queued seq=%lu for cloud upload (pending=%u)\n",
+                (unsigned long)record.seq,
+                (unsigned)gPendingTelemetryCount);
+}
+
+bool ensureTelemetryHeapBudget() {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t minHeap  = ESP.getMinFreeHeap();
+
+  Serial.printf("[SYS][HEAP] pretask=cloud-submit free=%lu min=%lu floor=%lu\n",
+                (unsigned long)freeHeap,
+                (unsigned long)minHeap,
+                (unsigned long)kCloudSubmitPreferredHeapFloor);
+
+  if (freeHeap >= kCloudSubmitPreferredHeapFloor) {
+    return true;
+  }
+
+  Serial.println("[SYS][HEAP] optimization required before cloud-submit — pausing MQTT and retrying heap check");
+  MqttGateway::setExclusiveTlsWindow(true);
+  delay(60);
+
+  const uint32_t optimizedFreeHeap = ESP.getFreeHeap();
+  const uint32_t optimizedMinHeap  = ESP.getMinFreeHeap();
+  Serial.printf("[SYS][HEAP] optimized=cloud-submit free=%lu min=%lu preferred=%lu emergency=%lu\n",
+                (unsigned long)optimizedFreeHeap,
+                (unsigned long)optimizedMinHeap,
+                (unsigned long)kCloudSubmitPreferredHeapFloor,
+                (unsigned long)kCloudSubmitEmergencyHeapFloor);
+
+  if (optimizedFreeHeap >= kCloudSubmitPreferredHeapFloor) {
+    return true;
+  }
+
+  if (optimizedFreeHeap >= kCloudSubmitEmergencyHeapFloor) {
+    Serial.println("[SYS][HEAP] cloud-submit proceeding below preferred floor because telemetry is high priority");
+    return true;
+  }
+
+  Serial.println("[SYS][HEAP] cloud-submit still below emergency floor — upload deferred");
+  MqttGateway::setExclusiveTlsWindow(false);
   return false;
 }
 }
@@ -115,7 +238,7 @@ static void printDataPayload(JsonDocument& doc, uint32_t seq,
 // =====================================================
 // submitToCloud — WiFi POST
 // =====================================================
-static void submitToCloud(JsonDocument& doc, uint32_t seq, int rssi, float snr) {
+static bool submitToCloud(const TelemetryRecord& record) {
   Serial.println("[Cloud] Submitting to API...");
 
   String nodeId = getNodeIdString();
@@ -124,25 +247,65 @@ static void submitToCloud(JsonDocument& doc, uint32_t seq, int rssi, float snr) 
   bool ok = WiFiManager::submitSensorData(
     nodeId.c_str(),
     gatewayHardwareId.c_str(),
-    seq,
-    doc["b"]  | 0,
-    doc["v"]  | 0.0f,
-    doc["m"]  | 0,
-    doc["p"]  | 0.0f,
-    doc["ps"] | 0,
-    doc["t"]  | 0,
-    doc["ts"] | 0,
-    doc["u"]  | 0.0f,
-    doc["us"] | 0,
-    doc["tw"] | 0.0f,
-    doc["tm"] | 0.0f,
-    doc["te"] | 0.0f,
-    (doc["e"] | "None"),
-    rssi,
-    snr
+    record.seq,
+    record.battery,
+    record.voltage,
+    record.current,
+    record.pH,
+    record.phStatus,
+    record.tds,
+    record.tdsStatus,
+    record.turbidity,
+    record.turbidityStatus,
+    record.waterTemp,
+    record.moduleTemp,
+    record.esp32Temp,
+    record.errorMsg,
+    record.rssi,
+    record.snr
   );
 
   Serial.println(ok ? "[Cloud] ✓ Sent successfully" : "[Cloud] ✗ Send failed");
+  return ok;
+}
+
+bool telemetryHasPendingUpload() {
+  return gPendingTelemetryCount > 0;
+}
+
+void telemetryTick() {
+  if (gPendingTelemetryCount == 0) {
+    return;
+  }
+
+  if (audioBusy || shouldPauseBackgroundWork()) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (gLastTelemetryAttemptAt != 0 && (now - gLastTelemetryAttemptAt) < kTelemetryRetryIntervalMs) {
+    return;
+  }
+
+  gLastTelemetryAttemptAt = now;
+  const TelemetryRecord& record = gPendingTelemetry[gPendingTelemetryHead];
+
+  if (!ensureTelemetryHeapBudget()) {
+    Serial.printf("[Telemetry] Pending seq=%lu will retry later (pending=%u)\n",
+                  (unsigned long)record.seq,
+                  (unsigned)gPendingTelemetryCount);
+    return;
+  }
+
+  if (submitToCloud(record)) {
+    popPendingTelemetry();
+    Serial.printf("[Telemetry] Upload complete for seq=%lu (remaining=%u)\n",
+                  (unsigned long)record.seq,
+                  (unsigned)gPendingTelemetryCount);
+  } else {
+    Serial.printf("[Telemetry] Upload failed for seq=%lu — leaving it queued for retry\n",
+                  (unsigned long)record.seq);
+  }
 }
 // =====================================================
 // handleDataPayload
@@ -174,16 +337,15 @@ void handleDataPayload(const char *json, int rssi, float snr) {
     Serial.println("[Telemetry] SHAKE_ALERT received — triggering alarm");
     startAlarm();
 
-    // POST to cloud immediately with e=SHAKE
-    if (heapReadyForTask("cloud-submit", kCloudSubmitHeapFloor)) {
-      submitToCloud(doc, seq, rssi, snr);
-    } else {
-      Serial.println("[Telemetry] Skipping cloud submit for SHAKE frame due low heap");
-    }
+    enqueueTelemetryRecord(buildTelemetryRecord(doc, seq, rssi, snr));
+    telemetryTick();
 
     // Queue fall audio alert and play
     collectAlertFiles(doc, rssi);
-    if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
+    if (telemetryHasPendingUpload()) {
+      Serial.println("[Telemetry] Deferring queued alerts until cloud backlog is cleared");
+      clearAlertQueue();
+    } else if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
       playQueuedAlerts();
     } else {
       Serial.println("[Telemetry] Skipping queued alerts due low heap");
@@ -203,13 +365,13 @@ void handleDataPayload(const char *json, int rssi, float snr) {
   // ── MEASURE_RESP path ──
   notifyMeasureResponseHandled();
   collectAlertFiles(doc, rssi);
-  if (heapReadyForTask("cloud-submit", kCloudSubmitHeapFloor)) {
-    submitToCloud(doc, seq, rssi, snr);
-  } else {
-    Serial.println("[Telemetry] Skipping cloud submit for this frame due low heap");
-  }
+  enqueueTelemetryRecord(buildTelemetryRecord(doc, seq, rssi, snr));
+  telemetryTick();
 
-  if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
+  if (telemetryHasPendingUpload()) {
+    Serial.println("[Telemetry] Deferring queued alerts until cloud backlog is cleared");
+    clearAlertQueue();
+  } else if (heapReadyForTask("audio-playback", kAudioPlaybackHeapFloor)) {
     playQueuedAlerts();
   } else {
     Serial.println("[Telemetry] Skipping queued alerts due low heap");

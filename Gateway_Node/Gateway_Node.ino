@@ -5,6 +5,7 @@
 #include "node_pairing_store.h"
 #include "mqtt_gateway.h"
 #include "otaa_manager.h"
+#include "telemetry.h"
 
 enum class BootMode {
   PROVISIONING,
@@ -83,7 +84,7 @@ void loop() {
       break;
 
     case BootMode::NORMAL:
-      if (!shouldPauseBackgroundWork()) {
+      if (!shouldPauseBackgroundWork() && !telemetryHasPendingUpload()) {
         MqttGateway::loop();
       }
       NormalMode::loop();

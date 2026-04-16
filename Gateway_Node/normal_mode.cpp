@@ -117,25 +117,27 @@ void loop() {
   otaaTick();
 
   int packetSize = LoRa.parsePacket();
-  if (!packetSize) return;
+  if (packetSize) {
+    uint8_t frame[MAX_FRAME_LEN];
+    size_t  len = 0;
+    while (LoRa.available() && len < sizeof(frame)) frame[len++] = (uint8_t)LoRa.read();
 
-  uint8_t frame[MAX_FRAME_LEN];
-  size_t  len = 0;
-  while (LoRa.available() && len < sizeof(frame)) frame[len++] = (uint8_t)LoRa.read();
+    int   rssi = LoRa.packetRssi();
+    float snr  = LoRa.packetSnr();
 
-  int   rssi = LoRa.packetRssi();
-  float snr  = LoRa.packetSnr();
+    if (len >= 2) {
+      uint8_t msgType = frame[1];
 
-  if (len < 2) return;
+      if (msgType == MSG_TYPE_DATA) {
+        parseAndDispatchDataFrame(frame, len, rssi, snr);
+      } else {
+        parseAndDispatchTypedFrame(frame, len, rssi, snr);
+      }
+    }
 
-  uint8_t msgType = frame[1];
-
-  if (msgType == MSG_TYPE_DATA) {
-    parseAndDispatchDataFrame(frame, len, rssi, snr);
-  } else {
-    parseAndDispatchTypedFrame(frame, len, rssi, snr);
+    LoRa.receive();
   }
 
-  LoRa.receive();
+  telemetryTick();
 }
 }
