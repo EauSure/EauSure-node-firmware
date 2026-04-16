@@ -21,6 +21,8 @@ extern SPIClass sdSPI;
 // =====================================================
 bool initSD();
 bool isSdReady();
+bool ensureSdReady();
+void markSdNotReady();
 
 // =====================================================
 // OTA Functions (optional, for future use)

@@ -90,19 +90,31 @@ bool playAlertFile(const char* path) {
   audioBusy = true;
   logAudioHeap("before-open");
 
-  if (!isSdReady()) {
+  if (!ensureSdReady()) {
     Serial.printf("[AUDIO] Skipping %s because SD is not mounted\n", path);
     audioBusy = false;
     return false;
   }
 
   if (!SD.exists(path)) {
-    Serial.printf("[AUDIO] ERROR: SD.exists false for %s\n", path);
-    audioBusy = false;
-    return false;
+    Serial.printf("[AUDIO] SD.exists false for %s — attempting runtime re-mount\n", path);
+    markSdNotReady();
+    if (!ensureSdReady() || !SD.exists(path)) {
+      Serial.printf("[AUDIO] ERROR: SD.exists false for %s after re-mount\n", path);
+      audioBusy = false;
+      return false;
+    }
   }
 
   File audioFile = SD.open(path, FILE_READ);
+  if (!audioFile) {
+    Serial.printf("[AUDIO] Open failed for %s — attempting runtime re-mount\n", path);
+    markSdNotReady();
+    if (ensureSdReady()) {
+      audioFile = SD.open(path, FILE_READ);
+    }
+  }
+
   if (!audioFile) {
     Serial.printf("[AUDIO] ERROR: file not found: %s\n", path);
     audioBusy = false;
@@ -141,7 +153,7 @@ bool playAlertFile(const char* path) {
 void playQueuedAlerts() {
   if (alertCount == 0) return;
 
-  if (!isSdReady()) {
+  if (!ensureSdReady()) {
     Serial.println("[ALERT] Clearing queued alerts because SD is not mounted");
     clearAlertQueue();
     return;

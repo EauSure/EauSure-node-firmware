@@ -7,6 +7,7 @@ SPIClass sdSPI(HSPI);
 
 namespace {
 bool gSdReady = false;
+uint32_t gLastSdEnsureAttemptAt = 0;
 
 constexpr uint32_t kSdClockCandidatesHz[] = {
   8000000,
@@ -18,6 +19,7 @@ constexpr uint32_t kSdStartupSettleMs = 250;
 constexpr uint32_t kSdBetweenAttemptsMs = 30;
 constexpr uint32_t kSdRetryPassDelayMs = 400;
 constexpr uint32_t kSdBusResetDelayMs = 10;
+constexpr uint32_t kSdEnsureRetryIntervalMs = 1500;
 
 bool tryMountSdPass(uint32_t& selectedClockHz) {
   for (uint32_t clockHz : kSdClockCandidatesHz) {
@@ -91,11 +93,34 @@ bool isSdReady() {
   return gSdReady;
 }
 
+void markSdNotReady() {
+  if (!gSdReady) return;
+
+  gSdReady = false;
+  Serial.println("[SD] Marked not ready — runtime re-mount required");
+}
+
+bool ensureSdReady() {
+  if (gSdReady) {
+    return true;
+  }
+
+  const uint32_t now = millis();
+  if (gLastSdEnsureAttemptAt != 0 &&
+      (now - gLastSdEnsureAttemptAt) < kSdEnsureRetryIntervalMs) {
+    return false;
+  }
+
+  gLastSdEnsureAttemptAt = now;
+  Serial.println("[SD] Runtime re-mount requested");
+  return initSD();
+}
+
 // =====================================================
 // Firmware Over-The-Air Update (OTA)
 // =====================================================
 void sendFirmwareOTA(const char* path) {
-  if (!isSdReady()) {
+  if (!ensureSdReady()) {
     Serial.println("[FUOTA] Error: SD not ready");
     return;
   }
