@@ -1,6 +1,5 @@
 .vscode
 **/config.h
 /API
-/ble_test
-/ble_test/ble_provision_test.py
-/register
+/test_API_Firmware
+/Sysml

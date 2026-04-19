@@ -1,0 +1,1037 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="720"
+   viewBox="0 0 720 859.40656"
+   role="img"
+   version="1.1"
+   id="svg53"
+   sodipodi:docname="comm.svg"
+   height="859.40656"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   inkscape:export-filename="comm.png"
+   inkscape:export-xdpi="150"
+   inkscape:export-ydpi="150"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview53"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.84021739"
+     inkscape:cx="471.90168"
+     inkscape:cy="920.59508"
+     inkscape:window-width="1920"
+     inkscape:window-height="991"
+     inkscape:window-x="-9"
+     inkscape:window-y="-9"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg53" />
+  <title
+     id="title1">Communication sans fil maître-esclave sécurisée</title>
+  <desc
+     id="desc1">Diagramme de séquence : activation initiale, vérification périodique, demande de mesure, alerte événementielle — entre Gateway (maître) et Nœud IoT (esclave) via canal radio LoRa.</desc>
+  <defs
+     id="defs8">
+    <marker
+       id="arrow-gw"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#7b74e0"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path1" />
+    </marker>
+    <marker
+       id="arrow-node"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#5dca9d"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path2" />
+    </marker>
+    <marker
+       id="arrow-alert"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#e2784b"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path3" />
+    </marker>
+    <marker
+       id="arrow-ack"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#9ca3af"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path4" />
+    </marker>
+    <!-- Mask for lifelines through text -->
+    <mask
+       id="lifeline-mask"
+       maskUnits="userSpaceOnUse">
+      <rect
+         x="0"
+         y="0"
+         width="720"
+         height="920"
+         fill="#ffffff"
+         id="rect4" />
+      <!-- Phase labels -->
+      <rect
+         x="38"
+         y="86"
+         width="644"
+         height="16"
+         fill="#000000"
+         rx="2"
+         id="rect5" />
+      <rect
+         x="38"
+         y="192"
+         width="644"
+         height="16"
+         fill="#000000"
+         rx="2"
+         id="rect6" />
+      <rect
+         x="38"
+         y="296"
+         width="644"
+         height="16"
+         fill="#000000"
+         rx="2"
+         id="rect7" />
+      <rect
+         x="38"
+         y="450"
+         width="644"
+         height="16"
+         fill="#000000"
+         rx="2"
+         id="rect8" />
+    </mask>
+    <marker
+       id="arrow-gw-0"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#7b74e0"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path1-9" />
+    </marker>
+    <marker
+       id="arrow-ack-8"
+       viewBox="0 0 10 10"
+       refX="8"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M 2,1 8,5 2,9"
+         fill="none"
+         stroke="#9ca3af"
+         stroke-width="1.5"
+         stroke-linecap="round"
+         stroke-linejoin="round"
+         id="path4-2" />
+    </marker>
+  </defs>
+  <!-- ═══════════════ BACKGROUND ═══════════════ -->
+  <rect
+     x="0"
+     y="0"
+     width="720"
+     height="859.40656"
+     fill="#16161a"
+     id="rect9"
+     style="stroke-width:0.966508" />
+  <!-- ═══════════════ TITLE BLOCK ═══════════════ -->
+  <text
+     x="360"
+     y="28"
+     text-anchor="middle"
+     fill="#e8e6dc"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="17px"
+     font-weight="700"
+     id="text9">Communication sans fil maître-esclave sécurisée</text>
+  <text
+     x="360"
+     y="48"
+     text-anchor="middle"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     font-weight="400"
+     id="text10">Une gateway orchestre, le nœud répond, le protocole garantit fiabilité et sécurité</text>
+  <!-- ═══════════════ COLUMN HEADERS ═══════════════ -->
+  <!-- Gateway (maître) -->
+  <rect
+     x="40"
+     y="60"
+     width="160"
+     height="44"
+     rx="9"
+     fill="#3c3489"
+     stroke="#7b74e0"
+     stroke-width="0.75"
+     id="rect10" />
+  <text
+     x="120"
+     y="75"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="13.5px"
+     font-weight="600"
+     id="text11">Gateway</text>
+  <text
+     x="120"
+     y="91"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#9b95e0"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text12">(maître)</text>
+  <!-- Canal radio label (centre) -->
+  <rect
+     x="290"
+     y="67"
+     width="140"
+     height="30"
+     rx="7"
+     fill="#1e1e26"
+     stroke="#3a3a4e"
+     stroke-width="0.75"
+     id="rect12" />
+  <text
+     x="360"
+     y="82"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#6b7280"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     font-weight="500"
+     id="text13">📡 Canal radio LoRa</text>
+  <!-- Nœud IoT (esclave) -->
+  <rect
+     x="520"
+     y="60"
+     width="160"
+     height="44"
+     rx="9"
+     fill="#085041"
+     stroke="#5dca9d"
+     stroke-width="0.75"
+     id="rect13" />
+  <text
+     x="600"
+     y="75"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#9fe1cb"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="13.5px"
+     font-weight="600"
+     id="text14">Nœud IoT</text>
+  <text
+     x="600"
+     y="91"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#5dca9d"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text15">(esclave)</text>
+  <!-- ═══════════════ LIFELINES ═══════════════ -->
+  <line
+     x1="120"
+     y1="104"
+     x2="120"
+     y2="750"
+     stroke="#3a3a4e"
+     stroke-width="1"
+     stroke-dasharray="4, 4"
+     mask="url(#lifeline-mask)"
+     id="line15" />
+  <line
+     x1="600"
+     y1="104"
+     x2="600"
+     y2="750"
+     stroke="#3a3a4e"
+     stroke-width="1"
+     stroke-dasharray="4, 4"
+     mask="url(#lifeline-mask)"
+     id="line16" />
+  <!-- ═══════════════ PHASE 1 : ACTIVATION INITIALE ═══════════════ -->
+  <rect
+     x="38"
+     y="112"
+     width="644"
+     height="14"
+     rx="3"
+     fill="#252530"
+     opacity="0.9"
+     id="rect16" />
+  <text
+     x="360"
+     y="119.5"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#7b74e0"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     font-weight="600"
+     letter-spacing="0.5"
+     id="text16">① ACTIVATION INITIALE</text>
+  <!-- GW → Node: Demande d'activation -->
+  <line
+     x1="126"
+     y1="154"
+     x2="590"
+     y2="154"
+     stroke="#7b74e0"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gw)"
+     id="line17" />
+  <text
+     x="358"
+     y="145"
+     text-anchor="middle"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text17">Demande d'activation</text>
+  <!-- Callout: écoute du canal -->
+  <g
+     id="g58"
+     transform="translate(290,332)">
+    <rect
+       x="214.55431"
+       y="153.02649"
+       width="160.2963"
+       height="17.947001"
+       rx="4.9321938"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.524551"
+       id="rect17" />
+    <text
+       x="295"
+       y="162"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9.5px"
+       id="text18">🔇 écoute du canal avant émission</text>
+  </g>
+  <!-- Node → GW: Confirmation de présence -->
+  <line
+     x1="594"
+     y1="196"
+     x2="130"
+     y2="196"
+     stroke="#5dca9d"
+     stroke-width="1.5"
+     marker-end="url(#arrow-node)"
+     id="line18" />
+  <text
+     x="358"
+     y="187"
+     text-anchor="middle"
+     fill="#9fe1cb"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text19">Confirmation - nœud prêt</text>
+  <!-- ═══════════════ PHASE 2 : VÉRIFICATION RÉGULIÈRE ═══════════════ -->
+  <rect
+     x="38"
+     y="210"
+     width="644"
+     height="14"
+     rx="3"
+     fill="#252530"
+     opacity="0.9"
+     id="rect19" />
+  <text
+     x="360"
+     y="217.5"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#7b74e0"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     font-weight="600"
+     letter-spacing="0.5"
+     id="text20">② VÉRIFICATION RÉGULIÈRE</text>
+  <!-- GW → Node: Vérification périodique -->
+  <line
+     x1="126"
+     y1="262"
+     x2="590"
+     y2="262"
+     stroke="#7b74e0"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gw)"
+     id="line20" />
+  <text
+     x="358"
+     y="251"
+     text-anchor="middle"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text21">Vérification périodique</text>
+  <!-- Callout: petit délai -->
+  <g
+     id="g59"
+     transform="translate(-162,-18)">
+    <rect
+       x="232"
+       y="253"
+       width="118"
+       height="16"
+       rx="4"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.5"
+       id="rect21" />
+    <text
+       x="291"
+       y="261"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9.5px"
+       id="text22">⏱ petit délai anti-collision</text>
+  </g>
+  <!-- Node → GW: Nœud toujours actif -->
+  <line
+     x1="594"
+     y1="292"
+     x2="130"
+     y2="292"
+     stroke="#5dca9d"
+     stroke-width="1.5"
+     marker-end="url(#arrow-node)"
+     id="line22" />
+  <text
+     x="358"
+     y="279"
+     text-anchor="middle"
+     fill="#9fe1cb"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text23">Nœud toujours actif</text>
+  <!-- ═══════════════ PHASE 3 : DEMANDE DE MESURE ═══════════════ -->
+  <rect
+     x="38"
+     y="308"
+     width="644"
+     height="14"
+     rx="3"
+     fill="#252530"
+     opacity="0.9"
+     id="rect23" />
+  <text
+     x="360"
+     y="315.5"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#7b74e0"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     font-weight="600"
+     letter-spacing="0.5"
+     id="text24">③ DEMANDE DE MESURE</text>
+  <!-- GW → Node: Demande une mesure -->
+  <line
+     x1="126"
+     y1="350"
+     x2="590"
+     y2="350"
+     stroke="#7b74e0"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gw)"
+     id="line24" />
+  <line
+     x1="126"
+     y1="596.27502"
+     x2="590"
+     y2="596.27502"
+     stroke="#7b74e0"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gw-0)"
+     id="line24-8"
+     style="marker-end:url(#arrow-gw-0)" />
+  <text
+     x="358"
+     y="341"
+     text-anchor="middle"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text25">Demande de mesure</text>
+  <!-- Node: Processing box -->
+  <!-- Node → GW: ACK immédiat (pointillé) -->
+  <line
+     x1="576"
+     y1="374"
+     x2="130"
+     y2="374"
+     stroke="#9ca3af"
+     stroke-width="1"
+     stroke-dasharray="5, 3"
+     marker-end="url(#arrow-ack)"
+     id="line27" />
+  <line
+     x1="577.44995"
+     y1="446.85001"
+     x2="131.44995"
+     y2="446.85001"
+     stroke="#9ca3af"
+     stroke-width="1"
+     stroke-dasharray="5, 3"
+     marker-end="url(#arrow-ack-8)"
+     id="line27-5"
+     style="marker-end:url(#arrow-ack-8)" />
+  <text
+     x="358"
+     y="367"
+     text-anchor="middle"
+     fill="#6b7280"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     id="text28">confirmation de réception</text>
+  <!-- Callout: ordre des messages (right side) -->
+  <g
+     id="g55"
+     transform="translate(-42,154)">
+    <rect
+       x="606.94806"
+       y="400.19781"
+       width="100"
+       height="16"
+       rx="4"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.5"
+       id="rect28" />
+    <text
+       x="656.94806"
+       y="408.19781"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9px"
+       id="text29">🔢 ordre des messages</text>
+  </g>
+  <!-- Node → GW: Données mesurées -->
+  <line
+     x1="594"
+     y1="418"
+     x2="130"
+     y2="418"
+     stroke="#5dca9d"
+     stroke-width="1.5"
+     marker-end="url(#arrow-node)"
+     id="line29" />
+  <text
+     x="358"
+     y="407"
+     text-anchor="middle"
+     fill="#9fe1cb"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text30">Données mesurées envoyées</text>
+  <!-- GW → Node: Confirmation de réception -->
+  <text
+     x="358"
+     y="439"
+     text-anchor="middle"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     id="text31">Réception confirmée</text>
+  <!-- Callout left: contenu protégé -->
+  <g
+     id="g54"
+     transform="translate(58,-34)">
+    <rect
+       x="12"
+       y="420"
+       width="100"
+       height="16"
+       rx="4"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.5"
+       id="rect31" />
+    <text
+       x="62"
+       y="428"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9px"
+       id="text32">🔒 contenu protégé</text>
+  </g>
+  <!-- ═══════════════ PHASE 4 : ALERTE ÉVÉNEMENTIELLE ═══════════════ -->
+  <g
+     id="g61"
+     transform="translate(0,46)">
+    <rect
+       x="576.04877"
+       y="356.04877"
+       width="49.902473"
+       height="33.266266"
+       rx="4.9902472"
+       fill="#0d3d2e"
+       stroke="#5dca9d"
+       stroke-width="0.75"
+       id="rect25" />
+    <g
+       id="g60">
+      <text
+         x="601"
+         y="369"
+         text-anchor="middle"
+         dominant-baseline="central"
+         fill="#5dca9d"
+         font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+         font-size="9.5px"
+         id="text26">lecture</text>
+      <text
+         x="601"
+         y="378"
+         text-anchor="middle"
+         dominant-baseline="central"
+         fill="#5dca9d"
+         font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+         font-size="8.5px"
+         id="text27">capteurs</text>
+    </g>
+  </g>
+  <rect
+     x="38"
+     y="460"
+     width="644"
+     height="14"
+     rx="3"
+     fill="#252530"
+     opacity="0.9"
+     id="rect32" />
+  <text
+     x="360"
+     y="467.5"
+     text-anchor="middle"
+     dominant-baseline="central"
+     fill="#e2784b"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     font-weight="600"
+     letter-spacing="0.5"
+     id="text33">④ ALERTE ÉVÉNEMENTIELLE (initiée par le nœud)</text>
+  <!-- Node → GW: Alerte -->
+  <line
+     x1="594"
+     y1="514"
+     x2="130"
+     y2="514"
+     stroke="#e2784b"
+     stroke-width="2"
+     marker-end="url(#arrow-alert)"
+     id="line33" />
+  <text
+     x="358"
+     y="507"
+     text-anchor="middle"
+     fill="#f4a880"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="12px"
+     font-weight="500"
+     id="text34">⚠ Alerte événementielle</text>
+  <!-- Callout: nouvel essai si besoin -->
+  <g
+     id="g56"
+     transform="translate(-538,-340)">
+    <rect
+       x="608.01263"
+       y="505.41757"
+       width="106.70728"
+       height="16.569767"
+       rx="4.2682915"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.509062"
+       id="rect34" />
+    <text
+       x="660"
+       y="514"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9px"
+       id="text35">🔁 nouvel essai si besoin</text>
+  </g>
+  <!-- GW → Node: Accusé d'alerte -->
+  <line
+     x1="126"
+     y1="540"
+     x2="590"
+     y2="540"
+     stroke="#7b74e0"
+     stroke-width="1"
+     stroke-dasharray="5, 3"
+     marker-end="url(#arrow-gw)"
+     id="line35"
+     style="fill:#9ca3af;fill-opacity:1" />
+  <text
+     x="358"
+     y="533"
+     text-anchor="middle"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10.5px"
+     id="text36"
+     style="fill:#7b74e0;fill-opacity:1">Alerte reçue - accusé de réception</text>
+  <!-- GW: Processing box -->
+  <g
+     id="g62"
+     transform="translate(0,12)">
+    <rect
+       x="94.05394"
+       y="538.05396"
+       width="51.892117"
+       height="31.466303"
+       rx="4.9896269"
+       fill="#1e1b4b"
+       stroke="#7b74e0"
+       stroke-width="0.75"
+       id="rect36" />
+    <text
+       x="120"
+       y="550"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#a5a0f0"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9px"
+       id="text37">traitement</text>
+    <text
+       x="120"
+       y="558"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#a5a0f0"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="8.5px"
+       id="text38">alerte</text>
+  </g>
+  <!-- GW → Node: Demande de mesure complémentaire -->
+  <text
+     x="358"
+     y="586"
+     text-anchor="middle"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text39">Mesure complémentaire demandée</text>
+  <!-- Node → GW: État complet -->
+  <line
+     x1="594"
+     y1="628"
+     x2="130"
+     y2="628"
+     stroke="#5dca9d"
+     stroke-width="1.5"
+     marker-end="url(#arrow-node)"
+     id="line39" />
+  <text
+     x="358"
+     y="617"
+     text-anchor="middle"
+     fill="#9fe1cb"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11.5px"
+     id="text40">État complet renvoyé</text>
+  <!-- Callout: communication plus stable -->
+  <g
+     id="g57"
+     transform="translate(320,42)">
+    <rect
+       x="218.00558"
+       y="607.26923"
+       width="127.98882"
+       height="16.725195"
+       rx="3.9996505"
+       fill="#1a1a24"
+       stroke="#3a3a4e"
+       stroke-width="0.5"
+       id="rect40" />
+    <text
+       x="282"
+       y="616"
+       text-anchor="middle"
+       dominant-baseline="central"
+       fill="#6b7280"
+       font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+       font-size="9px"
+       id="text41">✅ communication plus stable</text>
+  </g>
+  <!-- ═══════════════ SEPARATOR ═══════════════ -->
+  <line
+     x1="38"
+     y1="640"
+     x2="682"
+     y2="640"
+     stroke="#2a2a38"
+     stroke-width="0.5"
+     stroke-dasharray="3, 5"
+     id="line41" />
+  <!-- ═══════════════ LEGEND ═══════════════ -->
+  <text
+     x="44"
+     y="660"
+     fill="#6b7280"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     font-weight="600"
+     id="text42">Légende</text>
+  <!-- GW→Node solid -->
+  <line
+     x1="44"
+     y1="679"
+     x2="92"
+     y2="679"
+     stroke="#7b74e0"
+     stroke-width="1.5"
+     marker-end="url(#arrow-gw)"
+     id="line42" />
+  <text
+     x="98"
+     y="683"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text43">Gateway → Nœud (commande)</text>
+  <!-- Node→GW solid -->
+  <line
+     x1="260"
+     y1="679"
+     x2="308"
+     y2="679"
+     stroke="#5dca9d"
+     stroke-width="1.5"
+     marker-end="url(#arrow-node)"
+     id="line43" />
+  <text
+     x="314"
+     y="683"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text44">Nœud → Gateway (réponse)</text>
+  <!-- Alert -->
+  <line
+     x1="480"
+     y1="679"
+     x2="528"
+     y2="679"
+     stroke="#e2784b"
+     stroke-width="2"
+     marker-end="url(#arrow-alert)"
+     id="line44" />
+  <text
+     x="534"
+     y="683"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text45">Alerte spontanée</text>
+  <!-- Dashed ACK -->
+  <line
+     x1="44"
+     y1="699"
+     x2="92"
+     y2="699"
+     stroke="#9ca3af"
+     stroke-width="1"
+     stroke-dasharray="5, 3"
+     marker-end="url(#arrow-ack)"
+     id="line45" />
+  <text
+     x="98"
+     y="703"
+     fill="#9ca3af"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text46">Accusé de réception (pointillé)</text>
+  <!-- ═══════════════ "CE QUE GARANTIT LE PROTOCOLE" BLOCK ═══════════════ -->
+  <rect
+     x="38"
+     y="718"
+     width="644"
+     height="90"
+     rx="8"
+     fill="#1c1c28"
+     stroke="#3a3a4e"
+     stroke-width="0.75"
+     id="rect46" />
+  <!-- small accent bar -->
+  <text
+     x="58"
+     y="737"
+     fill="#cecbf6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="12px"
+     font-weight="700"
+     id="text47">Ce que garantit le protocole</text>
+  <!-- 4 bullets, 2 per row -->
+  <circle
+     cx="60"
+     cy="757"
+     r="3"
+     fill="#7b74e0"
+     id="circle47" />
+  <text
+     x="68"
+     y="761"
+     fill="#c2c0b6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text48">messages ordonnés</text>
+  <circle
+     cx="220"
+     cy="757"
+     r="3"
+     fill="#7b74e0"
+     id="circle48" />
+  <text
+     x="228"
+     y="761"
+     fill="#c2c0b6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text49">réponses confirmées</text>
+  <circle
+     cx="400"
+     cy="757"
+     r="3"
+     fill="#7b74e0"
+     id="circle49" />
+  <text
+     x="408"
+     y="761"
+     fill="#c2c0b6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text50">réémission si nécessaire</text>
+  <circle
+     cx="60"
+     cy="779"
+     r="3"
+     fill="#7b74e0"
+     id="circle50" />
+  <text
+     x="68"
+     y="783"
+     fill="#c2c0b6"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="11px"
+     id="text51">échanges protégés</text>
+  <!-- small footer note -->
+  <text
+     x="360"
+     y="800"
+     text-anchor="middle"
+     fill="#4b5563"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="10px"
+     font-style="italic"
+     id="text52">Toutes les trames sont chiffrées · numéros de séquence actifs · canal vérifié avant émission</text>
+  <!-- ═══════════════ SIDE CALLOUT PANEL (right gutter) ═══════════════ -->
+  <!-- This panel sits just to the right of column 600, using space between column and right edge -->
+  <!-- We integrate callouts inline above; summary badge instead -->
+  <!-- bottom attribution -->
+  <text
+     x="360"
+     y="842"
+     text-anchor="middle"
+     fill="#374151"
+     font-family="'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="9.5px"
+     id="text53">#IoT #LoRa #Architecture #MaîtreEsclave #Protocole #Embarqué</text>
+  <metadata
+     id="metadata62">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>Communication sans fil maître-esclave sécurisée</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>

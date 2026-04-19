@@ -16,20 +16,15 @@
  */
 
 // ============================================================
-// DEVICE IDENTIFICATION - MUST MATCH IoT_Node!
+// GATEWAY PAIRING IDENTITY
 // ============================================================
-static const uint32_t DEVICE_ID = 0x12345678;
+// The real gateway device ID used by the backend and MQTT is derived at runtime
+// from the gateway WiFi MAC address, so it is intentionally different from the
+// paired IoT node LoRa ID learned during pairing.
+#define GATEWAY_DEVICE_NAME "Gateway DevKit"
+#define GATEWAY_DEVICE_ID "GW-XXXXXXXX"
+#define GATEWAY_DEVICE_SECRET "replace_with_gateway_device_secret"
 static const uint8_t PROTO_VERSION = 1;
-
-// ============================================================
-// SECURITY KEYS - MUST MATCH IoT_Node EXACTLY!
-// ============================================================
-// GCM provides both encryption and authentication in one operation
-// Copy these from IoT_Node/config.h
-static const uint8_t ENC_KEY[16] = {
-  0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
-  0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99
-};
 
 // ============================================================
 // LoRa RADIO CONFIGURATION - MUST MATCH IoT_Node!
@@ -77,16 +72,14 @@ static const uint8_t ACK_RETRY_MAX = 3;
 // ============================================================
 // WIFI & CLOUD API CONFIGURATION
 // ============================================================
-// Configure your WiFi network credentials and API endpoint
-#define WIFI_SSID "YourWiFiNetwork"
-#define WIFI_PASSWORD "your-wifi-password"
-#define API_URL "https://your-api-domain.vercel.app/api/sensor-data"
-#define API_KEY "your-gateway-api-key-from-vercel"
+
+#define API_URL "https://api-domain.example/api/sensor-data"
+#define API_KEY "replace_with_api_key"
 
 // Connection settings
 #define WIFI_TIMEOUT_MS 10000
 #define HTTP_TIMEOUT_MS 5000
-#define WIFI_RECONNECT_INTERVAL 30000  // Check connection every 30 seconds
+#define WIFI_RECONNECT_INTERVAL 30000
 
 // ============================================================
 // DEBUG
@@ -94,3 +87,26 @@ static const uint8_t ACK_RETRY_MAX = 3;
 #define DEBUG_ENABLED 1
 static const uint32_t SERIAL_BAUD = 115200;
 #define LOG_PACKETS 0
+
+
+#define API_BASE_URL "https://api-domain.example"
+#define GATEWAY_FIRMWARE_VERSION "0.0.1"
+// ============================================================
+// MQTT CONFIGURATION
+// ============================================================
+
+#define MQTT_BROKER_HOST "mqtt-broker.example"
+#define MQTT_BROKER_PORT 8883
+
+#define MQTT_USERNAME "replace_with_mqtt_username"
+#define MQTT_PASSWORD "replace_with_mqtt_password"
+
+// Topic base
+#define MQTT_COMMAND_TOPIC_PREFIX "commands/gateway/"
+#define MQTT_EVENT_TOPIC_PREFIX   "events/gateway/"
+
+// Optional
+#define MQTT_CLIENT_ID_PREFIX "gw-"
+
+#define MQTT_RECONNECT_INTERVAL_MS 5000
+#define MQTT_QOS 1

@@ -7,8 +7,8 @@
  * 
  * SETUP INSTRUCTIONS:
  * 1. Copy this file to config.h
- * 2. Generate new encryption keys: openssl rand -hex 16
- * 3. Update DEVICE_ID, ENC_KEY, HMAC_KEY
+ * 2. Generate/update node identity and secret for your deployment
+ * 3. Update NODE_DEVICE_ID and NODE_DEVICE_SECRET
  * 4. Verify LoRa parameters match Gateway_Node/config.h
  * 5. Compile and upload
  * 
@@ -17,20 +17,17 @@
  */
 
 // ============================================================
-// DEVICE IDENTIFICATION
+// DEVICE PAIRING IDENTITY
 // ============================================================
-static const uint32_t DEVICE_ID = 0x12345678;  // EDIT: Your device ID
+#define NODE_DEVICE_NAME "Tank Node"
+#define NODE_DEVICE_ID 0x12345678
+static const uint32_t DEVICE_ID = NODE_DEVICE_ID;
+// This must match the pre-registered deviceSecret stored in the backend.
+#define NODE_DEVICE_SECRET "replace_with_node_device_secret"
 static const uint8_t PROTO_VERSION = 1;
 
-// ============================================================
-// SECURITY KEYS (AES-128-GCM Authenticated Encryption) - EDIT THESE!
-// ============================================================
-// GCM provides both encryption and authentication in one operation
-// Generate with: openssl rand -hex 16
-static const uint8_t ENC_KEY[16] = {
-  0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
-  0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99
-};
+
+
 
 // ============================================================
 // LoRa RADIO CONFIGURATION - MUST MATCH GATEWAY
@@ -57,17 +54,17 @@ static const uint32_t ACK_TIMEOUT_MS = 1500;
 // ============================================================
 // SENSOR CONFIGURATION
 // ============================================================
-static const float BATT_EMPTY_V = 3.30f;
+static const float BATT_EMPTY_V = 3.00f;
 static const float BATT_FULL_V = 4.20f;
 
 static const int SENSOR_POWER_PIN = 40;
 static const int TURB_ADC_PIN = 6;
 static const int TDS_ADC_PIN = 2;
 static const int PH_ADC_PIN = 17;
-static const int ONE_WIRE_BUS = 7;
+static const int ONE_WIRE_BUS = 21;
 
 // pH Sensor Calibration
-static const float PH_VOLTAGE_AT_NEUTRAL = 1.50f;  // Voltage at pH 7.0
+static const float PH_VOLTAGE_AT_NEUTRAL = 2.62f;  // Voltage at pH 7.0
 static const float PH_SLOPE = 0.18f;               // Voltage change per pH unit
 
 static const uint32_t SENSOR_WARMUP_MS = 300;
