@@ -68,6 +68,11 @@ Main files:
 
 ## Pairing and Runtime Flow
 
+Visual summary of the gateway/node mode transitions.
+[SVG source](./Flow_Protocole/flux_3_modes.svg)
+
+![Three-mode system flow](./Flow_Protocole/flux_3_modes.png)
+
 ### First-time setup
 
 1. The gateway starts in BLE provisioning mode if WiFi credentials are not stored.
@@ -84,6 +89,11 @@ Main files:
 4. The gateway parses the payload, uploads telemetry, and triggers alerts when thresholds are exceeded.
 
 ## LoRa Protocol
+
+Visual summary of the LoRa command and response protocol.
+[SVG source](./Flow_Protocole/protocole_communication_LoRa.svg)
+
+![LoRa protocol flow](./Flow_Protocole/protocole_communication_LoRa.png)
 
 Both firmwares use the same encrypted frame types:
 
@@ -152,4 +162,3 @@ These files are ignored by Git through `**/config.h`.
 - `IoT_Node/` targets an ESP32-S3 board
 - `Gateway_Node/` targets an ESP32-based gateway board
 - Open each `.ino` file in Arduino IDE / PlatformIO with the required libraries installed
-
