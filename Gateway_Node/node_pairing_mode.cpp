@@ -122,6 +122,10 @@ bool ensureHomeWifiReady() {
 
 bool ensureGatewayProvisioned(const ProvisioningData& prov) {
   if (gGatewayProvisioned) return true;
+  if (prov.cloudProvisioned || WifiStore::isCloudProvisioned()) {
+    gGatewayProvisioned = true;
+    return true;
+  }
   if (!ensureHomeWifiReady()) {
     gProvisionResult = GatewayProvisionResult{};
     gProvisionResult.message = "WiFi not ready";
@@ -146,6 +150,7 @@ bool ensureGatewayProvisioned(const ProvisioningData& prov) {
   );
 
   if (!ok) return false;
+  WifiStore::markCloudProvisioned();
   gGatewayProvisioned = true;
   return true;
 }
@@ -442,7 +447,7 @@ bool sendProvisionToNode() {
 
     Serial.println("[PAIRING][DEBUG] Provision payload about to be sent to node:");
     Serial.printf("[PAIRING][DEBUG]   wifiSsid=%s\n", prov.ssid.c_str());
-    Serial.printf("[PAIRING][DEBUG]   wifiPassword=%s\n", prov.password.c_str());
+    Serial.println("[PAIRING][DEBUG]   wifiPassword=[REDACTED]");
     Serial.printf("[PAIRING][DEBUG]   nodeId=%s\n", gTargetNodeId.c_str());
 
     if (!http.begin(String(NODE_AP_BASE_URL) + "/provision")) {
@@ -553,7 +558,7 @@ void begin() {
     fatalError("No valid WiFi provisioning data - re-provision the gateway");
     return;
   }
-  if (prov.token.isEmpty()) {
+  if (!prov.cloudProvisioned && prov.token.isEmpty()) {
     fatalError("No provisioning token - re-provision the gateway");
     return;
   }

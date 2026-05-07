@@ -43,26 +43,35 @@ void begin() {
   }
 
   String gatewayHardwareId = getGatewayHardwareIdString();
+  if (!prov.cloudProvisioned) {
+    if (prov.token.isEmpty()) {
+      Serial.println("[FATAL] Missing provisioning token before initial cloud claim");
+      while (true) delay(100);
+    }
 
-  GatewayProvisionResult provision;
-  bool apiOk = ApiClient::provisionGateway(
-    API_BASE_URL,
-    gatewayHardwareId,
-    GATEWAY_FIRMWARE_VERSION,
-    GATEWAY_DEVICE_SECRET,
-    prov.token,
-    prov.gatewayName,
-    provision
-  );
+    GatewayProvisionResult provision;
+    bool apiOk = ApiClient::provisionGateway(
+      API_BASE_URL,
+      gatewayHardwareId,
+      GATEWAY_FIRMWARE_VERSION,
+      GATEWAY_DEVICE_SECRET,
+      prov.token,
+      prov.gatewayName,
+      provision
+    );
 
-  if (!apiOk) {
-    Serial.printf("[FATAL] Gateway provisioning failed: %s\n", provision.message.c_str());
-    while (true) delay(100);
+    if (!apiOk) {
+      Serial.printf("[FATAL] Gateway provisioning failed: %s\n", provision.message.c_str());
+      while (true) delay(100);
+    }
+
+    WifiStore::markCloudProvisioned();
+    Serial.println("[Gateway] Provisioned successfully");
+    Serial.printf("[Gateway] gatewayId: %s\n", provision.gatewayId.c_str());
+    Serial.printf("[Gateway] mqttTopic: %s\n", provision.mqttTopic.c_str());
+  } else {
+    Serial.println("[Gateway] Cloud provisioning already completed");
   }
-
-  Serial.println("[Gateway] Provisioned successfully");
-  Serial.printf("[Gateway] gatewayId: %s\n", provision.gatewayId.c_str());
-  Serial.printf("[Gateway] mqttTopic: %s\n", provision.mqttTopic.c_str());
 
   if (!initLoRa()) {
     Serial.println("[FATAL] LoRa init failed");

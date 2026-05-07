@@ -217,7 +217,10 @@ bool provisionGateway(
   serializeJson(req, body);
 
   Serial.println("\n[API] POST " + url);
-  Serial.println("[API] Body: " + body);
+  Serial.printf("[API] Body: {\"gatewayHardwareId\":\"%s\",\"firmwareVersion\":\"%s\",\"deviceSecret\":\"[REDACTED]\",\"token\":\"[REDACTED]\",\"gatewayName\":\"%s\"}\n",
+                gatewayHardwareId.c_str(),
+                firmwareVersion.c_str(),
+                gatewayName.c_str());
 
   String response;
   int code = httpsPost(url, body, response);
