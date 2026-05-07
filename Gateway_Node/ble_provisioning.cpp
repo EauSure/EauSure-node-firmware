@@ -33,13 +33,13 @@ namespace {
     return out;
   }
 
-  String hmacSha256Hex(const String& key, const String& message) {
+  String hmacSha256HexRaw(const uint8_t* key, size_t keyLen, const String& message) {
     unsigned char out[32];
     mbedtls_md_context_t ctx;
     mbedtls_md_init(&ctx);
     const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     mbedtls_md_setup(&ctx, info, 1);
-    mbedtls_md_hmac_starts(&ctx, reinterpret_cast<const unsigned char*>(key.c_str()), key.length());
+    mbedtls_md_hmac_starts(&ctx, key, keyLen);
     mbedtls_md_hmac_update(&ctx, reinterpret_cast<const unsigned char*>(message.c_str()), message.length());
     mbedtls_md_hmac_finish(&ctx, out);
     mbedtls_md_free(&ctx);
@@ -52,6 +52,14 @@ namespace {
       hex += kHexChars[out[i] & 0x0F];
     }
     return hex;
+  }
+
+  String hmacSha256Hex(const String& key, const String& message) {
+    return hmacSha256HexRaw(
+      reinterpret_cast<const uint8_t*>(key.c_str()),
+      key.length(),
+      message
+    );
   }
 
   bool decodeBase64(const String& input, uint8_t* out, size_t outCap, size_t& outLen) {
@@ -193,8 +201,15 @@ namespace {
       "gwprov:v2|mac|" + gatewayHardwareId + "|" + challenge + "|" + sessionId
     );
 
-    const String expectedMac = hmacSha256Hex(
-      macKeyHex,
+    uint8_t macKey[32];
+    if (!hexToBytes(macKeyHex, macKey, sizeof(macKey))) {
+      errorMessage = "Invalid derived MAC key";
+      return false;
+    }
+
+    const String expectedMac = hmacSha256HexRaw(
+      macKey,
+      sizeof(macKey),
       buildMacMessage(gatewayHardwareId, challenge, sessionId, ivBase64, ciphertextBase64)
     );
     if (!constantEquals(mac, expectedMac)) {
@@ -227,7 +242,7 @@ namespace {
       return false;
     }
 
-    StaticJsonDocument<384> innerDoc;
+    StaticJsonDocument<768> innerDoc;
     if (deserializeJson(innerDoc, plaintext) != DeserializationError::Ok) {
       errorMessage = "Provisioning plaintext JSON invalid";
       return false;
@@ -267,7 +282,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
     String value = c->getValue();
     if (value.length() == 0) return;
 
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<1536> doc;
     if (deserializeJson(doc, value)) {
       if (gTx) {
         gTx->setValue("{\"success\":false,\"message\":\"Invalid JSON\"}");
