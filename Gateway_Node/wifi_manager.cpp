@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 #include "mqtt_gateway.h"
+#include "tls_utils.h"
 
 namespace WiFiManager {
 
@@ -43,9 +44,9 @@ namespace WiFiManager {
 
         bool rawTlsConnectTest(const String& host, uint16_t port) {
             WiFiClientSecure client;
-            client.setInsecure();
-            client.setTimeout(10000);
-            client.setHandshakeTimeout(15);
+            if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "telemetry raw TLS")) {
+                return false;
+            }
             Serial.printf("[WiFi][DIAG] raw TLS connect -> %s:%u\n", host.c_str(), port);
             bool ok = client.connect(host.c_str(), port);
             Serial.printf("[WiFi][DIAG] raw TLS connect: %s\n", ok ? "OK" : "FAIL");
@@ -169,9 +170,10 @@ namespace WiFiManager {
         rawTlsConnectTest(host, 443);
 
         WiFiClientSecure client;
-        client.setInsecure();
-        client.setTimeout(10000);
-        client.setHandshakeTimeout(15);
+        if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "telemetry HTTPS POST")) {
+            MqttGateway::setExclusiveTlsWindow(false);
+            return false;
+        }
 
         HTTPClient http;
         http.setReuse(false);

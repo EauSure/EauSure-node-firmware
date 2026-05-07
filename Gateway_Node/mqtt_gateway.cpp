@@ -7,6 +7,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "node_pairing_mode.h"
+#include "tls_utils.h"
 
 namespace {
 
@@ -20,6 +21,7 @@ String gEventTopic;
 uint32_t gLastConnectAttemptMs = 0;
 bool gSubscribed = false;
 bool gExclusiveTlsWindow = false;
+bool gTlsReady = false;
 
 String getGatewayHardwareIdString() {
   String mac = WiFiManager::getMacAddress();
@@ -121,6 +123,10 @@ bool connectBroker() {
     return false;
   }
 
+  if (!gTlsReady) {
+    return false;
+  }
+
   ensureTopics();
 
   if (gMqttClient.connected()) return true;
@@ -176,7 +182,10 @@ namespace MqttGateway {
 void begin() {
   ensureTopics();
 
-  gTlsClient.setInsecure();
+  gTlsReady = TlsUtils::configureClient(gTlsClient, MQTT_TLS_ROOT_CA, "MQTT broker");
+  if (!gTlsReady) {
+    Serial.println("[MQTT] TLS CA missing - broker connection disabled until configured");
+  }
   gMqttClient.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
   gMqttClient.setCallback(mqttMessageCallback);
   gMqttClient.setBufferSize(1024);

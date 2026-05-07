@@ -91,6 +91,15 @@ static const uint32_t SERIAL_BAUD = 115200;
 
 #define API_BASE_URL "https://api-domain.example"
 #define GATEWAY_FIRMWARE_VERSION "0.0.1"
+
+// ============================================================
+// TLS TRUST CONFIGURATION
+// ============================================================
+// Paste the PEM-encoded root/intermediate CA that signs your HTTPS API cert.
+static const char API_TLS_ROOT_CA[] PROGMEM = R"PEM(
+
+)PEM";
+
 // ============================================================
 // MQTT CONFIGURATION
 // ============================================================
@@ -110,3 +119,8 @@ static const uint32_t SERIAL_BAUD = 115200;
 
 #define MQTT_RECONNECT_INTERVAL_MS 5000
 #define MQTT_QOS 1
+
+// Paste the PEM-encoded root/intermediate CA that signs your MQTT broker cert.
+static const char MQTT_TLS_ROOT_CA[] PROGMEM = R"PEM(
+
+)PEM";

@@ -1,5 +1,6 @@
 #include "api_client.h"
 #include "config.h"
+#include "tls_utils.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
@@ -34,9 +35,9 @@ static bool rawTcpConnectTest(const String& host, uint16_t port) {
 
 static bool rawTlsConnectTest(const String& host, uint16_t port) {
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(10000);
-  client.setHandshakeTimeout(15);
+  if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "API raw TLS")) {
+    return false;
+  }
 
   Serial.printf("[API][DIAG] raw TLS connect -> %s:%u\n", host.c_str(), port);
   bool ok = client.connect(host.c_str(), port);
@@ -71,9 +72,9 @@ static int httpsPost(const String& url, const String& body, String& responseOut,
   rawTlsConnectTest(host, 443);
 
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(10000);
-  client.setHandshakeTimeout(15);
+  if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "API HTTPS POST")) {
+    return -1;
+  }
 
   HTTPClient http;
   http.setReuse(false);
@@ -128,9 +129,9 @@ static int httpsGet(const String& url, String& responseOut) {
   rawTlsConnectTest(host, 443);
 
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(10000);
-  client.setHandshakeTimeout(15);
+  if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "API HTTPS GET")) {
+    return -1;
+  }
 
   HTTPClient http;
   http.setReuse(false);
