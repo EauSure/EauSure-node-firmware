@@ -24,10 +24,13 @@ bool gExclusiveTlsWindow = false;
 bool gTlsReady = false;
 
 String getGatewayHardwareIdString() {
-  String mac = WiFiManager::getMacAddress();
-  mac.replace(":", "");
-  mac.toUpperCase();
-  return mac;
+  String configured = String(GATEWAY_DEVICE_ID);
+  configured.trim();
+  configured.toUpperCase();
+  if (!configured.startsWith("GW-")) {
+    configured = "GW-" + configured;
+  }
+  return configured;
 }
 
 String makeClientId() {
@@ -107,6 +110,12 @@ void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
 
   if (cmd == "PAIRING_KEY_READY") {
     handlePairingKeyReady(doc);
+    return;
+  }
+
+  if (cmd == "SCAN_NODES") {
+    Serial.println("[MQTT] SCAN_NODES command received");
+    NodePairingMode::startScanning();
     return;
   }
 

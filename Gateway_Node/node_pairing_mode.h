@@ -23,6 +23,9 @@ namespace NodePairingMode {
   // Call this from your MQTT handler after receiving PAIRING_KEY_READY.
   bool providePairingKey(const String& nodeId, const String& aesKey);
 
+  // Trigger scanning manually via MQTT SCAN_NODES command
+  void startScanning();
+
   // Optional manual reset for cancel flows.
   void cancelPendingConfirmation();
 }

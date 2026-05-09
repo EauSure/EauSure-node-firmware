@@ -161,10 +161,13 @@ static String getNodeIdString() {
 }
 
 static String getGatewayHardwareIdString() {
-  String mac = WiFiManager::getMacAddress();
-  mac.replace(":", "");
-  mac.toUpperCase();
-  return mac;
+  String configured = String(GATEWAY_DEVICE_ID);
+  configured.trim();
+  configured.toUpperCase();
+  if (!configured.startsWith("GW-")) {
+    configured = "GW-" + configured;
+  }
+  return configured;
 }
 // =====================================================
 // collectAlertFiles — queue WAV alerts based on payload

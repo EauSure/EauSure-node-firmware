@@ -19,6 +19,7 @@ namespace {
 
 enum class PairState {
   IDLE,
+  WAITING_FOR_COMMAND,
   SCANNING,
   WAITING_CONFIRMATION,
   FETCHING_PROOF,
@@ -63,10 +64,13 @@ uint32_t gRetryAtMs = 0;
 uint32_t gLastWaitKeyLogMs = 0;
 
 String getGatewayHardwareIdString() {
-  String mac = WiFiManager::getMacAddress();
-  mac.replace(":", "");
-  mac.toUpperCase();
-  return mac;
+  String configured = String(GATEWAY_DEVICE_ID);
+  configured.trim();
+  configured.toUpperCase();
+  if (!configured.startsWith("GW-")) {
+    configured = "GW-" + configured;
+  }
+  return configured;
 }
 
 String makeNonceHex(size_t numBytes) {
@@ -133,7 +137,7 @@ bool ensureGatewayProvisioned(const ProvisioningData& prov) {
   }
 
   String gatewayHardwareId = getGatewayHardwareIdString();
-  if (gatewayHardwareId == "000000000000" || gatewayHardwareId.length() != 12) {
+  if (gatewayHardwareId == "GW-000000000000" || gatewayHardwareId.length() < 5) {
     gProvisionResult = GatewayProvisionResult{};
     gProvisionResult.message = "Invalid gateway hardware ID: " + gatewayHardwareId;
     return false;
@@ -536,7 +540,7 @@ void failAndReturnToScan(const String& reason, bool shouldRollback) {
   resetPendingConfirmationState();
   resetCandidate();
   gPauseMqtt = false;
-  gState = PairState::SCANNING;
+  gState = PairState::WAITING_FOR_COMMAND;
   gStateAtMs = millis();
 }
 
@@ -574,8 +578,8 @@ void begin() {
     return;
   }
 
-  Serial.println("[PAIRING] WiFi pairing scan mode started");
-  gState = PairState::SCANNING;
+  Serial.println("[PAIRING] WiFi pairing ready, waiting for SCAN_NODES command...");
+  gState = PairState::WAITING_FOR_COMMAND;
   gStateAtMs = millis();
 }
 
@@ -584,6 +588,11 @@ void loop() {
   gBusy = true;
 
   switch (gState) {
+    case PairState::WAITING_FOR_COMMAND:
+      // Just wait. The startScanning() function will move us to SCANNING.
+      delay(100);
+      break;
+
     case PairState::SCANNING:
       resetCandidate();
       if (scanForCandidate()) {
@@ -784,8 +793,18 @@ void cancelPendingConfirmation() {
     resetPendingConfirmationState();
     resetCandidate();
     gPauseMqtt = false;
+    gState = PairState::WAITING_FOR_COMMAND;
+    gStateAtMs = millis();
+  }
+}
+
+void startScanning() {
+  if (gState == PairState::WAITING_FOR_COMMAND) {
+    Serial.println("[PAIRING] Received manual scan command, starting scan...");
     gState = PairState::SCANNING;
     gStateAtMs = millis();
+  } else {
+    Serial.printf("[PAIRING] Ignoring scan command, current state is not WAITING_FOR_COMMAND (%d)\n", (int)gState);
   }
 }
 

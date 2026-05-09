@@ -19,7 +19,25 @@ namespace {
   bool gPending = false;
   ProvisioningData gData;
   String gGatewayHardwareId;
+  String gGatewayDisplayName;
   String gChallenge;
+  String gChunkTransferId;
+  String gChunkBuffer;
+  int gChunkExpectedTotal = 0;
+  int gChunkNextIndex = 0;
+
+  void resetChunkState() {
+    gChunkTransferId = "";
+    gChunkBuffer = "";
+    gChunkExpectedTotal = 0;
+    gChunkNextIndex = 0;
+  }
+
+  void notifyProvisioningError(const String& message) {
+    if (!gTx) return;
+    gTx->setValue((String("{\"success\":false,\"message\":\"") + message + "\"}").c_str());
+    gTx->notify();
+  }
 
   String makeRandomHex(size_t numBytes) {
     static const char* kHexChars = "0123456789abcdef";
@@ -103,6 +121,25 @@ namespace {
       diff |= static_cast<uint8_t>(left[i] ^ right[i]);
     }
     return diff == 0;
+  }
+
+  String escapeJsonString(const String& input) {
+    String out;
+    out.reserve(input.length() + 8);
+    for (size_t i = 0; i < input.length(); ++i) {
+      char c = input[i];
+      if (c == '\\' || c == '"') {
+        out += '\\';
+        out += c;
+      } else if (c == '\n') {
+        out += "\\n";
+      } else if (c == '\r') {
+        out += "\\r";
+      } else {
+        out += c;
+      }
+    }
+    return out;
   }
 
   bool decryptAesCbcPkcs7(
@@ -262,6 +299,93 @@ namespace {
     return true;
   }
 
+  bool parseProvisioningDocument(JsonDocument& doc, ProvisioningData& outData, String& errorMessage) {
+    if ((doc["version"] | 0) == 2) {
+      return parseSecureProvisioningPayload(doc, outData, errorMessage);
+    }
+
+    outData.ssid = String(doc["ssid"] | "");
+    outData.password = String(doc["password"] | "");
+    outData.token = String(doc["token"] | "");
+    outData.gatewayName = String(doc["gatewayName"] | "");
+    outData.valid = outData.ssid.length() > 0 && outData.password.length() > 0 && outData.token.length() > 0;
+
+    if (!outData.valid) {
+      errorMessage = "Missing required fields";
+      return false;
+    }
+
+    return true;
+  }
+
+  void acceptProvisioningDocument(JsonDocument& doc) {
+    ProvisioningData d;
+    String errorMessage;
+    if (!parseProvisioningDocument(doc, d, errorMessage)) {
+      notifyProvisioningError(errorMessage);
+      return;
+    }
+
+    gData = d;
+    gPending = true;
+
+    BleProvisioning::sendStatus(true, "Provisioning data received. Testing WiFi...", false);
+  }
+
+  bool handleChunkDocument(JsonDocument& doc) {
+    if (String(doc["type"] | "") != "chunk") return false;
+
+    const String transferId = String(doc["transferId"] | "");
+    const int index = doc["index"] | -1;
+    const int total = doc["total"] | 0;
+    const int totalLength = doc["totalLength"] | 0;
+    const String data = String(doc["data"] | "");
+
+    if (transferId.isEmpty() || index < 0 || total <= 0 || total > 20 || data.isEmpty() || totalLength <= 0 || totalLength > 2048) {
+      resetChunkState();
+      notifyProvisioningError("Invalid BLE chunk");
+      return true;
+    }
+
+    if (index == 0) {
+      resetChunkState();
+      gChunkTransferId = transferId;
+      gChunkExpectedTotal = total;
+      gChunkBuffer.reserve(totalLength);
+    }
+
+    if (transferId != gChunkTransferId || total != gChunkExpectedTotal || index != gChunkNextIndex) {
+      resetChunkState();
+      notifyProvisioningError("BLE chunk order mismatch");
+      return true;
+    }
+
+    gChunkBuffer += data;
+    gChunkNextIndex += 1;
+
+    if (gChunkNextIndex < gChunkExpectedTotal) {
+      return true;
+    }
+
+    if (gChunkBuffer.length() != static_cast<size_t>(totalLength)) {
+      resetChunkState();
+      notifyProvisioningError("BLE chunk length mismatch");
+      return true;
+    }
+
+    String assembled = gChunkBuffer;
+    resetChunkState();
+
+    StaticJsonDocument<1536> assembledDoc;
+    if (deserializeJson(assembledDoc, assembled)) {
+      notifyProvisioningError("Invalid chunked JSON");
+      return true;
+    }
+
+    acceptProvisioningDocument(assembledDoc);
+    return true;
+  }
+
   void publishHello() {
     if (!gTx) return;
 
@@ -269,6 +393,7 @@ namespace {
     helloDoc["type"] = "hello";
     helloDoc["version"] = 2;
     helloDoc["gatewayHardwareId"] = gGatewayHardwareId;
+    helloDoc["gatewayName"] = gGatewayDisplayName;
     helloDoc["challenge"] = gChallenge;
 
     String hello;
@@ -284,62 +409,34 @@ class RxCallbacks : public BLECharacteristicCallbacks {
 
     StaticJsonDocument<1536> doc;
     if (deserializeJson(doc, value)) {
-      if (gTx) {
-        gTx->setValue("{\"success\":false,\"message\":\"Invalid JSON\"}");
-        gTx->notify();
-      }
+      notifyProvisioningError("Invalid JSON");
       return;
     }
 
-    ProvisioningData d;
-    if ((doc["version"] | 0) == 2) {
-      String errorMessage;
-      if (!parseSecureProvisioningPayload(doc, d, errorMessage)) {
-        if (gTx) {
-          gTx->setValue((String("{\"success\":false,\"message\":\"") + errorMessage + "\"}").c_str());
-          gTx->notify();
-        }
-        return;
-      }
-    } else {
-      d.ssid = String(doc["ssid"] | "");
-      d.password = String(doc["password"] | "");
-      d.token = String(doc["token"] | "");
-      d.gatewayName = String(doc["gatewayName"] | "");
-      d.valid = d.ssid.length() > 0 && d.password.length() > 0 && d.token.length() > 0;
-    }
-
-    if (!d.valid) {
-      if (gTx) {
-        gTx->setValue("{\"success\":false,\"message\":\"Missing required fields\"}");
-        gTx->notify();
-      }
-      return;
-    }
-
-    gData = d;
-    gPending = true;
-
-    if (gTx) {
-      gTx->setValue("{\"success\":true,\"message\":\"Provisioning data received\"}");
-      gTx->notify();
-    }
+    if (handleChunkDocument(doc)) return;
+    acceptProvisioningDocument(doc);
   }
 };
 
 namespace BleProvisioning {
 
-void begin(const String& deviceName) {
-  gGatewayHardwareId = deviceName;
+void begin(const String& gatewayHardwareId, const String& gatewayDisplayName) {
+  gGatewayHardwareId = gatewayHardwareId;
+  gGatewayDisplayName = gatewayDisplayName;
   gChallenge = makeRandomHex(16);
-  BLEDevice::init(deviceName.c_str());
+  String advertisedName = gGatewayHardwareId;
+  if (!gGatewayDisplayName.isEmpty()) {
+    advertisedName += "|";
+    advertisedName += gGatewayDisplayName;
+  }
+  BLEDevice::init(advertisedName.c_str());
 
   BLEServer* server = BLEDevice::createServer();
   BLEService* service = server->createService(SERVICE_UUID);
 
   BLECharacteristic* rx = service->createCharacteristic(
     RX_UUID,
-    BLECharacteristic::PROPERTY_WRITE
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
 
   gTx = service->createCharacteristic(
@@ -356,7 +453,11 @@ void begin(const String& deviceName) {
   adv->addServiceUUID(SERVICE_UUID);
   adv->start();
 
-  Serial.printf("[BLE] Provisioning BLE started for %s\n", gGatewayHardwareId.c_str());
+  Serial.printf(
+    "[BLE] Provisioning BLE started for %s (%s)\n",
+    gGatewayHardwareId.c_str(),
+    gGatewayDisplayName.c_str()
+  );
 }
 
 void loop() {
@@ -369,6 +470,24 @@ bool hasPendingData() {
 ProvisioningData consumeData() {
   gPending = false;
   return gData;
+}
+
+void sendStatus(bool success, const String& message, bool final) {
+  if (!gTx) return;
+  String payload = String("{\"success\":") + (success ? "true" : "false") +
+    ",\"final\":" + (final ? "true" : "false") +
+    ",\"message\":\"" + escapeJsonString(message) + "\"}";
+  gTx->setValue(payload.c_str());
+  gTx->notify();
+}
+
+void restartAdvertising() {
+  BLEAdvertising* adv = BLEDevice::getAdvertising();
+  if (!adv) return;
+  adv->stop();
+  delay(100);
+  adv->start();
+  Serial.println("[BLE] Provisioning advertising restarted");
 }
 
 void stop() {

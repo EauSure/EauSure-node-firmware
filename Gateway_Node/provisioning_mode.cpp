@@ -1,17 +1,44 @@
 #include "provisioning_mode.h"
 #include "ble_provisioning.h"
+#include "config.h"
 #include "wifi_store.h"
 #include <WiFi.h>
 
 namespace {
   bool gComplete = false;
-  String getGatewayName() {
-    uint64_t mac = ESP.getEfuseMac();
-    char buf[20];
-    snprintf(buf, sizeof(buf), "GW-%04X%08X",
-             (uint16_t)(mac >> 32),
-             (uint32_t)mac);
-    return String(buf);
+
+  String getGatewayHardwareId() {
+    String configured = String(GATEWAY_DEVICE_ID);
+    configured.trim();
+    configured.toUpperCase();
+    if (!configured.startsWith("GW-")) {
+      configured = "GW-" + configured;
+    }
+    return configured;
+  }
+
+  String getGatewayDisplayName() {
+    String configured = String(GATEWAY_DEVICE_NAME);
+    configured.trim();
+    return configured;
+  }
+
+  void cleanupWifiAfterProvisioningAttempt() {
+    Serial.printf("[PROVISIONING] Heap before WiFi cleanup: %u\n", ESP.getFreeHeap());
+    WiFi.disconnect(false, false);
+    delay(300);
+    WiFi.mode(WIFI_OFF);
+    delay(800);
+    Serial.printf("[PROVISIONING] Heap after WiFi cleanup: %u\n", ESP.getFreeHeap());
+  }
+
+  void notifyFailureAndRestart(const String& message) {
+    BleProvisioning::sendStatus(false, message + " Gateway restarting for a clean retry.");
+    delay(1200);
+    cleanupWifiAfterProvisioningAttempt();
+    delay(300);
+    Serial.println("[PROVISIONING] Restarting after failed WiFi provisioning");
+    ESP.restart();
   }
 }
 
@@ -20,7 +47,7 @@ namespace ProvisioningMode {
 void begin() {
   gComplete = false;
   Serial.println("[PROVISIONING] Starting provisioning mode...");
-  BleProvisioning::begin(getGatewayName());
+  BleProvisioning::begin(getGatewayHardwareId(), getGatewayDisplayName());
 }
 
 void loop() {
@@ -35,17 +62,12 @@ void loop() {
 
   Serial.printf("[PROVISIONING] Received SSID: %s\n", data.ssid.c_str());
 
-  if (!WifiStore::save(data)) {
-    Serial.println("[PROVISIONING] Failed to save credentials");
-    return;
-  }
-
-  // optional: quick WiFi validation before reboot
   WiFi.mode(WIFI_STA);
   WiFi.begin(data.ssid.c_str(), data.password.c_str());
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) {
+    delay(500);
     delay(500);
     Serial.print(".");
   }
@@ -53,11 +75,26 @@ void loop() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[PROVISIONING] WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+    if (!WifiStore::save(data)) {
+      Serial.println("[PROVISIONING] Failed to save credentials");
+      notifyFailureAndRestart("WiFi connected, but credentials could not be saved.");
+      return;
+    }
+    BleProvisioning::sendStatus(true, "WiFi connected. Provisioning complete.");
     gComplete = true;
+    delay(500);
     BleProvisioning::stop();
   } else {
-    Serial.println("[PROVISIONING] WiFi connect failed, clearing saved data");
+    wl_status_t status = WiFi.status();
+    Serial.printf("[PROVISIONING] WiFi connect failed, status=%d\n", status);
     WifiStore::clear();
+    if (status == WL_NO_SSID_AVAIL) {
+      notifyFailureAndRestart("WiFi network not found. Check the SSID.");
+    } else if (status == WL_CONNECT_FAILED) {
+      notifyFailureAndRestart("WiFi connection failed. Check the password.");
+    } else {
+      notifyFailureAndRestart("WiFi connection timed out. Check SSID, password, or router availability.");
+    }
   }
 }
 
