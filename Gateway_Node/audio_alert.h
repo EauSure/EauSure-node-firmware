@@ -35,14 +35,19 @@ extern int alertCount;
 // =====================================================
 // AudioTools Objects
 // =====================================================
-extern I2SStream i2s;
-extern WAVDecoder wavDecoder;
-extern EncodedAudioStream decodedStream;
+extern I2SStream* i2s;
+extern WAVDecoder* wavDecoder;
+extern EncodedAudioStream* decodedStream;
 
 // =====================================================
 // Audio Init
 // =====================================================
 bool initAudio();
+
+// Hard release of I2S / WAV decoder / decoded stream. Called as a defensive
+// barrier by provisioning_mode / normal_mode before bringing up BLE or WiFi
+// so a pending alert cannot leak DMA into a BLE/WiFi-sensitive window.
+void forceReleaseAudioResources();
 
 // =====================================================
 // Alert Queue Management

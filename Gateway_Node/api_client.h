@@ -55,6 +55,36 @@ bool rollbackPairNode(
   ApiBasicResult& out
 );
 
+bool failPairingSession(
+  const String& apiBaseUrl,
+  const String& sessionId,
+  const String& reason,
+  ApiBasicResult& out
+);
+
+// Fetch persisted gateway + node config (called at boot to restore state after reflash)
+struct GatewayConfigResult {
+  bool success = false;
+  int httpCode = 0;
+  String message;
+
+  // Gateway-side settings
+  uint32_t measureIntervalSec = 60;
+  bool shakeEnabled = true;
+  float shakeThreshold = 1.1f;
+  bool nodeActive = true;
+  bool gatewayVocalAlerts = true;
+
+  // First paired node id (for SET_CONFIG forwarding)
+  String primaryNodeId;
+};
+
+bool fetchGatewayConfig(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  GatewayConfigResult& out
+);
+
 bool verifyNodeProof(
   const String& apiBaseUrl,
   const String& gatewayHardwareId,

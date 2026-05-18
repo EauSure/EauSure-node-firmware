@@ -1,5 +1,6 @@
 #include "lora_radio.h"
 #include "app_state.h"
+#include "pairing_store.h"
 #include "esp_mac.h"
 
 // =====================================================
@@ -609,6 +610,87 @@ bool pollCommandFrame(uint32_t timeoutMs) {
         }
         break;
       }
+
+    case MSG_TYPE_SET_CONFIG: {
+      // Payload JSON: {"st":1.1,"se":1}
+      // Only shake config is pushed to node.
+      // measureInterval and nodeActive are managed by gateway.
+      if (cipherLen == 0) {
+        Serial.println("[CTRL] SET_CONFIG received but payload is empty");
+        break;
+      }
+
+      // plain is already null-terminated (plain[cipherLen] = '\0' set above)
+      Serial.printf("[CTRL] SET_CONFIG payload: %s\n", (const char*)plain);
+
+      StaticJsonDocument<64> cfg;
+      if (deserializeJson(cfg, (const char*)plain) != DeserializationError::Ok) {
+        Serial.println("[CTRL] SET_CONFIG JSON parse error");
+        break;
+      }
+
+      if (cfg.containsKey("st")) {
+        float st = cfg["st"].as<float>();
+        if (st >= 0.5f && st <= 5.0f) {
+          gRuntimeShakeThresholdG = st;
+          Serial.printf("[CTRL] SET_CONFIG shakeThreshold=%.2f g\n", gRuntimeShakeThresholdG);
+        }
+      }
+      if (cfg.containsKey("se")) {
+        gRuntimeShakeEnabled = (cfg["se"].as<int>() != 0);
+        Serial.printf("[CTRL] SET_CONFIG shakeEnabled=%d\n", (int)gRuntimeShakeEnabled);
+      }
+      break;
+    }
+
+    case MSG_TYPE_UNPAIR: {
+      Serial.println("[CTRL] UNPAIR received — erasing pairing and rebooting into pairing mode");
+      PairingStore::clear();
+      gRuntimeEncKeyLoaded = false;
+      memset(gRuntimeEncKey, 0, sizeof(gRuntimeEncKey));
+      gNodeActive = false;
+      Serial.println("[CTRL] Pairing erased — rebooting...");
+      delay(500);
+      ESP.restart();
+      break;
+    }
+
+    case MSG_TYPE_SLEEP: {
+      if (cipherLen < 4) {
+        Serial.println("[CTRL] SLEEP payload too short");
+        break;
+      }
+      uint32_t sleepSec = readU32BE((const uint8_t*)plain);
+      Serial.printf("[CTRL] SLEEP received: sleeping for %lu seconds\n", sleepSec);
+      
+      // Turn off devices to save power before sleeping
+      if (gSensorTaskHandle != nullptr) vTaskSuspend(gSensorTaskHandle);
+      
+      // LoRa sleep
+      LoRa.sleep();
+      
+      // Enable wakeup via RTC timer (measure interval)
+      esp_sleep_enable_timer_wakeup(sleepSec * 1000000ULL);
+      
+      // Enable wakeup via EXT0 (MPU INT pin) for shake detection if enabled.
+      // CRITICAL: must configure the MPU6050's internal motion detection engine
+      // to assert the INT pin autonomously during deep sleep. Without this, the
+      // INT pin stays LOW forever because the software polling in MpuTask is
+      // not running during deep sleep.
+      if (gRuntimeShakeEnabled && mpuOk) {
+        if (mpuEnableMotionWakeInterrupt(gRuntimeShakeThresholdG)) {
+          esp_sleep_enable_ext0_wakeup((gpio_num_t)MPU_INT_PIN, 1);
+          Serial.println("[CTRL] EXT0 wake on MPU INT configured");
+        } else {
+          Serial.println("[CTRL] WARNING: MPU motion interrupt config failed — no shake wake");
+        }
+      }
+      
+      Serial.println("[CTRL] Entering deep sleep...");
+      delay(100);
+      esp_deep_sleep_start();
+      break;
+    }
 
     default:
       Serial.printf("[CTRL] unhandled command type 0x%02X\n", msgType);

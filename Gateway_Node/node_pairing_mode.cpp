@@ -3,6 +3,7 @@
 #include "wifi_manager.h"
 #include "wifi_store.h"
 #include "api_client.h"
+#include "mqtt_gateway.h"
 #include "config.h"
 
 #include <WiFi.h>
@@ -38,7 +39,6 @@ bool gBusy = false;
 bool gGatewayProvisioned = false;
 bool gConfirmationPending = false;
 bool gRollbackNeeded = false;
-bool gPauseMqtt = false;
 
 String gFoundSsid = "";
 String gFoundBleMac = "";
@@ -111,7 +111,7 @@ void fatalError(const String& reason) {
   Serial.printf("[PAIRING][FATAL] %s\n", reason.c_str());
   Serial.println("[PAIRING][FATAL] Pairing halted. Please fix the issue and reboot the gateway.");
   Serial.println("[PAIRING][FATAL] =============================\n");
-  gPauseMqtt = false;
+  MqttGateway::setExclusiveTlsWindow(false);
   resetCandidate();
   resetPendingConfirmationState();
   gState = PairState::FATAL_ERROR;
@@ -119,7 +119,7 @@ void fatalError(const String& reason) {
 }
 
 bool ensureHomeWifiReady() {
-  gPauseMqtt = false;
+  MqttGateway::setExclusiveTlsWindow(false);
   if (WiFiManager::isConnected()) return true;
   return WiFiManager::reconnect();
 }
@@ -169,6 +169,7 @@ bool connectToWifi(const String& ssid, const String& password, uint32_t timeoutM
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
     delay(250);
+    yield();  // feed the task watchdog
   }
 
   if (WiFi.status() != WL_CONNECTED) {
@@ -216,7 +217,8 @@ void logNodeApScanResult(const String& expectedSsid) {
 
 bool connectToNodeAp() {
   if (gTargetSsid.isEmpty() || gNodeApPassword.isEmpty()) return false;
-  gPauseMqtt = true;
+  // CRITICAL: Cleanly shutdown MQTT/TLS sockets BEFORE tearing down Wi-Fi hardware
+  MqttGateway::setExclusiveTlsWindow(true);
   delay(300);
   bool ok = connectToWifi(gTargetSsid, gNodeApPassword, WIFI_TIMEOUT_MS + 5000, "node AP");
   if (!ok) {
@@ -228,8 +230,11 @@ bool connectToNodeAp() {
 bool reconnectHomeWifi() {
   WiFi.disconnect(true, true);
   delay(150);
-  gPauseMqtt = false;
-  return WiFiManager::reconnect();
+  // Yield to the OS watchdog during reconnection attempt
+  yield();
+  bool ok = WiFiManager::reconnect();
+  MqttGateway::setExclusiveTlsWindow(false);
+  return ok;
 }
 
 bool scanForCandidate() {
@@ -523,23 +528,47 @@ bool rollbackPendingPairing() {
 void failAndReturnToScan(const String& reason, bool shouldRollback) {
   Serial.printf("[PAIRING][FAIL] %s\n", reason.c_str());
 
-  if (gPauseMqtt && !reconnectHomeWifi()) {
-    Serial.println("[PAIRING][FAIL] Could not restore home WiFi before retry");
+  // Notify backend/app so user knows the pairing failed
+  MqttGateway::publishPairingFailed(gTargetNodeId, reason);
+
+  // If we had paused MQTT, we need to reconnect WiFi to restore it
+  if (!WiFiManager::isConnected()) {
+    if (!reconnectHomeWifi()) {
+      Serial.println("[PAIRING][FAIL] Could not restore home WiFi before retry");
+    }
   }
 
   if (shouldRollback) {
     gRollbackNeeded = true;
-    if (!rollbackPendingPairing()) {
-      gRetryAtMs = millis() + API_ROLLBACK_RETRY_MS;
-      gState = PairState::FAILED_WAIT;
-      gStateAtMs = millis();
-      return;
+    if (!gPendingPairingToken.isEmpty()) {
+      // We have a pairing token — full rollback via /pair-node/rollback
+      if (!rollbackPendingPairing()) {
+        gRetryAtMs = millis() + API_ROLLBACK_RETRY_MS;
+        gState = PairState::FAILED_WAIT;
+        gStateAtMs = millis();
+        return;
+      }
+    } else if (!gPendingSessionId.isEmpty()) {
+      // No token yet — just mark the session as failed so app knows
+      ApiBasicResult failResult;
+      if (ensureHomeWifiReady()) {
+        bool ok = ApiClient::failPairingSession(
+          API_BASE_URL, gPendingSessionId, reason, failResult
+        );
+        if (ok) {
+          Serial.println("[PAIRING][FAIL] Session marked as failed on backend");
+        } else {
+          Serial.printf("[PAIRING][FAIL] failPairingSession failed: %s\n",
+                        failResult.message.c_str());
+        }
+      }
+      gRollbackNeeded = false;
     }
   }
 
   resetPendingConfirmationState();
   resetCandidate();
-  gPauseMqtt = false;
+  MqttGateway::setExclusiveTlsWindow(false);
   gState = PairState::WAITING_FOR_COMMAND;
   gStateAtMs = millis();
 }
@@ -552,7 +581,7 @@ void begin() {
   gComplete = false;
   gBusy = false;
   gGatewayProvisioned = false;
-  gPauseMqtt = false;
+  MqttGateway::setExclusiveTlsWindow(false);
 
   resetCandidate();
   resetPendingConfirmationState();
@@ -596,10 +625,16 @@ void loop() {
     case PairState::SCANNING:
       resetCandidate();
       if (scanForCandidate()) {
+        // Found a candidate — publish and wait for confirmation
+        MqttGateway::publishCandidateFound(gFoundNodeId, gFoundName, gFoundBleMac);
         gState = PairState::WAITING_CONFIRMATION;
         gStateAtMs = millis();
       } else {
-        delay(1000);
+        // No node found — publish scan_complete with found:false and return to idle
+        Serial.println("[PAIRING] Scan complete — no unpaired nodes found");
+        MqttGateway::publishScanComplete(false);
+        gState = PairState::WAITING_FOR_COMMAND;
+        gStateAtMs = millis();
       }
       break;
 
@@ -618,7 +653,8 @@ void loop() {
 
     case PairState::FETCHING_PROOF:
       if (!fetchNodeProof()) {
-        failAndReturnToScan("Failed to fetch node proof over WiFi", false);
+        // Node AP unreachable — mark session as failed so app can react
+        failAndReturnToScan("Failed to fetch node proof over WiFi", true);
         break;
       }
       gState = PairState::VERIFYING_PROOF;
@@ -627,7 +663,7 @@ void loop() {
 
     case PairState::VERIFYING_PROOF:
       if (!requestPairingToken()) {
-        failAndReturnToScan("Failed verifying node proof: " + gPairingTokenResult.message, false);
+        failAndReturnToScan("Failed verifying node proof: " + gPairingTokenResult.message, true);
         break;
       }
       gState = PairState::SENDING_PROVISION;
@@ -729,11 +765,24 @@ bool isComplete() {
 }
 
 bool shouldPauseMqtt() {
-  return gPauseMqtt;
+  // We no longer use gPauseMqtt, we use the global exclusive TLS window directly
+  return false;
 }
 
 bool hasCandidate() {
   return gState == PairState::WAITING_CONFIRMATION && !gFoundNodeId.isEmpty();
+}
+
+void cancelPairing() {
+  if (gState == PairState::IDLE || gState == PairState::WAITING_FOR_COMMAND) {
+    return;
+  }
+  Serial.println("[PAIRING] Sequence cancelled by CANCEL_PAIRING command");
+  resetPendingConfirmationState();
+  resetCandidate();
+  MqttGateway::setExclusiveTlsWindow(false);
+  gState = PairState::WAITING_FOR_COMMAND;
+  gStateAtMs = millis();
 }
 
 PairingCandidateInfo getCandidate() {
@@ -789,10 +838,10 @@ bool providePairingKey(const String& nodeId, const String& aesKey) {
 
 void cancelPendingConfirmation() {
   if (gState == PairState::WAITING_CONFIRMATION || gState == PairState::WAIT_KEY_READY) {
-    if (gPauseMqtt) reconnectHomeWifi();
+    if (!WiFiManager::isConnected()) reconnectHomeWifi();
     resetPendingConfirmationState();
     resetCandidate();
-    gPauseMqtt = false;
+    MqttGateway::setExclusiveTlsWindow(false);
     gState = PairState::WAITING_FOR_COMMAND;
     gStateAtMs = millis();
   }
@@ -803,8 +852,15 @@ void startScanning() {
     Serial.println("[PAIRING] Received manual scan command, starting scan...");
     gState = PairState::SCANNING;
     gStateAtMs = millis();
+  } else if (gState == PairState::WAITING_CONFIRMATION) {
+    // User did not confirm the previous candidate — reset and rescan
+    Serial.println("[PAIRING] New scan requested while waiting for confirmation — resetting candidate and rescanning...");
+    resetCandidate();
+    resetPendingConfirmationState();
+    gState = PairState::SCANNING;
+    gStateAtMs = millis();
   } else {
-    Serial.printf("[PAIRING] Ignoring scan command, current state is not WAITING_FOR_COMMAND (%d)\n", (int)gState);
+    Serial.printf("[PAIRING] Ignoring scan command, busy in state (%d)\n", (int)gState);
   }
 }
 

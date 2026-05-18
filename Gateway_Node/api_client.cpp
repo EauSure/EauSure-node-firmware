@@ -112,7 +112,7 @@ static int httpsPost(const String& url, const String& body, String& responseOut,
   return code;
 }
 
-static int httpsGet(const String& url, String& responseOut) {
+static int httpsGet(const String& url, String& responseOut, bool includeGatewayApiKey = false) {
   responseOut = "";
   String host = extractHostFromUrl(url);
 
@@ -146,6 +146,15 @@ static int httpsGet(const String& url, String& responseOut) {
   }
 
   http.addHeader("Connection", "close");
+
+  // Gateway auth via X-Gateway-Key header for protected endpoints
+  if (includeGatewayApiKey) {
+#if defined(API_KEY)
+    http.addHeader("X-Gateway-Key", API_KEY);
+#else
+    http.addHeader("X-Gateway-Key", GATEWAY_DEVICE_SECRET);
+#endif
+  }
 
   int code = http.GET();
   responseOut = (code > 0) ? http.getString() : "";
@@ -305,6 +314,126 @@ bool rollbackPairNode(
   out.success = resp["success"] | false;
   out.message = String(resp["message"] | "");
   return out.success;
+}
+
+bool failPairingSession(
+  const String& apiBaseUrl,
+  const String& sessionId,
+  const String& reason,
+  ApiBasicResult& out
+) {
+  out = ApiBasicResult{};
+
+  if (apiBaseUrl.isEmpty()) {
+    out.message = "API base URL is empty";
+    return false;
+  }
+  if (sessionId.isEmpty()) {
+    out.message = "Session ID is empty";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/pair-node/fail-session";
+
+  StaticJsonDocument<256> req;
+  req["sessionId"] = sessionId;
+  req["reason"] = reason;
+
+  String body;
+  serializeJson(req, body);
+
+  Serial.println("\n[API] POST " + url);
+
+  String response;
+  int code = httpsPost(url, body, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP POST failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<384> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  out.message = String(resp["message"] | "");
+  return out.success;
+}
+
+bool fetchGatewayConfig(
+  const String& apiBaseUrl,
+  const String& gatewayHardwareId,
+  GatewayConfigResult& out
+) {
+  out = GatewayConfigResult{};
+
+  if (apiBaseUrl.isEmpty() || gatewayHardwareId.isEmpty()) {
+    out.message = "Missing params";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/gateway/" + gatewayHardwareId + "/config";
+  Serial.println("\n[API] GET " + url);
+
+  String response;
+  int code = httpsGet(url, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP GET failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<1024> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  if (!out.success) {
+    out.message = String(resp["message"] | "Fetch config failed");
+    return false;
+  }
+
+  JsonObject data = resp["data"];
+  JsonObject gwConfig = data["gatewayConfig"];
+
+  // First paired node's config takes precedence (node-level overrides gateway defaults)
+  JsonArray nodes = data["nodes"].as<JsonArray>();
+  if (nodes.size() > 0) {
+    JsonObject firstNode = nodes[0];
+    out.primaryNodeId = String(firstNode["nodeId"] | "");
+    JsonObject nodeConfig = firstNode["config"];
+
+    // Use node config if present, fallback to gateway config
+    out.measureIntervalSec = nodeConfig.containsKey("measureInterval") ? nodeConfig["measureInterval"].as<uint32_t>() : (gwConfig["measureInterval"] | 60);
+    out.shakeEnabled       = nodeConfig.containsKey("shakeEnabled")    ? nodeConfig["shakeEnabled"].as<bool>()        : (gwConfig.containsKey("shakeEnabled") ? gwConfig["shakeEnabled"].as<bool>() : true);
+    out.shakeThreshold     = nodeConfig.containsKey("shakeThreshold")  ? nodeConfig["shakeThreshold"].as<float>()     : (gwConfig["shakeThreshold"] | 1.1f);
+    out.nodeActive         = nodeConfig.containsKey("nodeActive")      ? nodeConfig["nodeActive"].as<bool>()          : (gwConfig.containsKey("nodeActive") ? gwConfig["nodeActive"].as<bool>() : true);
+    out.gatewayVocalAlerts = nodeConfig.containsKey("gatewayVocalAlerts") ? nodeConfig["gatewayVocalAlerts"].as<bool>() : true;
+  } else {
+    // No paired node yet — use gateway defaults
+    out.measureIntervalSec = gwConfig["measureInterval"] | 60;
+    out.shakeEnabled       = gwConfig.containsKey("shakeEnabled") ? gwConfig["shakeEnabled"].as<bool>() : true;
+    out.shakeThreshold     = gwConfig["shakeThreshold"] | 1.1f;
+    out.nodeActive         = gwConfig.containsKey("nodeActive") ? gwConfig["nodeActive"].as<bool>() : true;
+    out.gatewayVocalAlerts = true;
+  }
+
+  Serial.printf("[API] Config fetched: mi=%lu st=%.2f se=%d na=%d va=%d node=%s\n",
+                (unsigned long)out.measureIntervalSec,
+                out.shakeThreshold,
+                (int)out.shakeEnabled,
+                (int)out.nodeActive,
+                (int)out.gatewayVocalAlerts,
+                out.primaryNodeId.c_str());
+
+  return true;
 }
 
 bool verifyNodeProof(

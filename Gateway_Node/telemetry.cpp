@@ -8,7 +8,7 @@
 namespace {
 constexpr uint32_t kCloudSubmitPreferredHeapFloor = 30000;
 constexpr uint32_t kCloudSubmitEmergencyHeapFloor = 24000;
-constexpr uint32_t kAudioPlaybackHeapFloor = 22000;
+constexpr uint32_t kAudioPlaybackHeapFloor = 26000;
 constexpr uint32_t kTelemetryRetryIntervalMs = 5000;
 constexpr size_t   kPendingTelemetryCapacity = 6;
 

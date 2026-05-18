@@ -22,6 +22,16 @@ bool isGatewayCommandInFlight();
 bool sendActivate();
 bool sendMeasureReq();
 bool sendHeartbeatReq();
+bool sendSetConfig(float shakeThresholdG, bool shakeEnabled);
+bool sendUnpair();
+bool sendSleepReq(uint32_t sleepDurationSec);
+
+// =====================================================
+// Queued Configuration (Class A workaround)
+// =====================================================
+void queueSetConfig(float shakeThresholdG, bool shakeEnabled);
+bool hasPendingConfig();
+bool sendPendingConfig();
 
 // =====================================================
 // Transport-level ACK sent to IoT node

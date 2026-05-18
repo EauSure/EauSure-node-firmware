@@ -26,10 +26,14 @@ PendingShake gPendingShake;
 // =====================================================
 SensorData     gSensorData;
 EventState     gEventState;
-volatile bool  gNodeActive = false;   // false until Gateway sends ACTIVATE
+RTC_DATA_ATTR volatile bool gNodeActive = false;   // false until Gateway sends ACTIVATE
 
 float phVoltageAtNeutral = PH_VOLTAGE_AT_NEUTRAL;
 float phSlope            = PH_SLOPE;
+
+// Runtime config — defaults from config.h, overridable via SET_CONFIG
+RTC_DATA_ATTR float    gRuntimeShakeThresholdG   = SHAKE_THRESHOLD_G;
+RTC_DATA_ATTR bool     gRuntimeShakeEnabled      = true;
 
 // =====================================================
 // FreeRTOS primitives
@@ -47,8 +51,8 @@ volatile bool gAckWaitActive = false;
 //   gTxSeq     — IoT outgoing frame counter (DATA / ACTIVATE_OK / HEARTBEAT_ACK)
 //   gCtrlRxSeq — last accepted incoming command seq (replay protection)
 // =====================================================
-uint32_t gTxSeq     = 1;
-uint32_t gCtrlRxSeq = 0;
+RTC_DATA_ATTR uint32_t gTxSeq     = 1;
+RTC_DATA_ATTR uint32_t gCtrlRxSeq = 0;
 
 
 uint8_t gRuntimeEncKey[16] = {0};
@@ -295,6 +299,76 @@ bool mpuInit() {
   return i2cWrite8(MPU_ADDR, REG_ACCEL_CONFIG, accelCfg);
 }
 
+// =====================================================
+// mpuEnableMotionWakeInterrupt
+//
+// Configures the MPU6050's internal motion detection engine
+// to assert the INT pin (active HIGH, latched) when motion
+// exceeds the given threshold. This allows the ESP32 to wake
+// from deep sleep via EXT0 on GPIO MPU_INT_PIN.
+//
+// Must be called AFTER mpuInit() and BEFORE esp_deep_sleep_start().
+// The MPU6050 stays powered during deep sleep (on the 3V3 rail)
+// and its motion engine runs autonomously.
+//
+// MPU6050 Motion Detection registers:
+//   0x1F MOT_THR  — threshold in mg (1 LSB = ~2 mg at ±8g range,
+//                   but the motion engine uses its own internal scale:
+//                   1 LSB ≈ 32 mg regardless of ACCEL_CONFIG)
+//   0x20 MOT_DUR  — duration in ms (1 LSB = 1 ms)
+//   0x37 INT_PIN_CFG — INT pin behavior
+//   0x38 INT_ENABLE  — which interrupts to enable
+//   0x6B PWR_MGMT_1  — cycle mode for low-power motion detection
+//   0x6C PWR_MGMT_2  — wake frequency in cycle mode
+// =====================================================
+bool mpuEnableMotionWakeInterrupt(float thresholdG) {
+  // Convert threshold from G to the MOT_THR register value.
+  // MPU6050 motion threshold: 1 LSB ≈ 32 mg (regardless of FS_SEL).
+  // So 1.1g = 1100 mg / 32 = ~34 LSBs.
+  uint8_t motThr = (uint8_t)constrain((int)(thresholdG * 1000.0f / 32.0f), 1, 255);
+
+  Serial.printf("[MPU] Configuring motion wake interrupt: threshold=%.2fg -> MOT_THR=%u\n",
+                thresholdG, motThr);
+
+  // 1. Wake up MPU (clear sleep bit) — should already be awake but be safe
+  if (!i2cWrite8(MPU_ADDR, REG_PWR_MGMT_1, 0x00)) return false;
+  delay(10);
+
+  // 2. Set accelerometer range (same as mpuInit)
+  uint8_t accelCfg = (ACCEL_RANGE & 0x03) << 3;
+  if (!i2cWrite8(MPU_ADDR, REG_ACCEL_CONFIG, accelCfg)) return false;
+
+  // 3. Set motion threshold
+  if (!i2cWrite8(MPU_ADDR, REG_MOT_THR, motThr)) return false;
+
+  // 4. Set motion duration (1 ms minimum — single sample above threshold triggers)
+  if (!i2cWrite8(MPU_ADDR, REG_MOT_DUR, 1)) return false;
+
+  // 5. Configure INT pin: active HIGH, push-pull, latched until read, clear on any read
+  //    Bit 7: INT_LEVEL = 0 (active HIGH)
+  //    Bit 6: INT_OPEN = 0 (push-pull)
+  //    Bit 5: LATCH_INT_EN = 1 (latched until cleared)
+  //    Bit 4: INT_RD_CLEAR = 1 (clear on any register read)
+  if (!i2cWrite8(MPU_ADDR, REG_INT_PIN_CFG, 0x30)) return false;
+
+  // 6. Enable Motion Detection interrupt only (bit 6 = MOT_EN)
+  if (!i2cWrite8(MPU_ADDR, REG_INT_ENABLE, 0x40)) return false;
+
+  // 7. Read INT_STATUS to clear any pending interrupt
+  uint8_t dummy[1];
+  i2cReadN(MPU_ADDR, REG_INT_STATUS, dummy, 1);
+
+  // 8. Put MPU into low-power cycle mode for autonomous motion detection.
+  //    PWR_MGMT_2: wake frequency = 40 Hz (bits 7:6 = 11), all axes enabled
+  if (!i2cWrite8(MPU_ADDR, REG_PWR_MGMT_2, 0xC0)) return false;
+
+  // PWR_MGMT_1: CYCLE=1 (bit 5), SLEEP=0, TEMP_DIS=1 (bit 3) to save power
+  if (!i2cWrite8(MPU_ADDR, REG_PWR_MGMT_1, 0x28)) return false;
+
+  Serial.println("[MPU] Motion wake interrupt configured — INT pin will go HIGH on shake");
+  return true;
+}
+
 void readMpuTemp() {
   if (!mpuOk) return;
   uint8_t b[2];
@@ -452,6 +526,7 @@ void readSensorsRoutine() {
 void checkShakeAndAlert() {
   if (!mpuOk) return;
   if (gEventState.measureInProgress) return;
+  if (!gRuntimeShakeEnabled) return;
 
   uint8_t b[14];
   if (!i2cReadN(MPU_ADDR, REG_ACCEL_XOUT_H, b, sizeof(b))) return;
@@ -468,7 +543,7 @@ void checkShakeAndAlert() {
   float amag     = sqrtf(axG * axG + ayG * ayG + azG * azG);
   float dynamicG = fabsf(amag - 1.0f);
 
-  if (dynamicG < SHAKE_THRESHOLD_G) return;
+  if (dynamicG < gRuntimeShakeThresholdG) return;
   if ((millis() - gEventState.lastShakeAt) < SHAKE_COOLDOWN_MS) return;
 
   // ── Shake confirmed ──

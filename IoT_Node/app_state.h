@@ -37,6 +37,9 @@ static const uint8_t MSG_TYPE_HEARTBEAT_REQ = 0x04;
 static const uint8_t MSG_TYPE_HEARTBEAT_ACK = 0x05;
 static const uint8_t MSG_TYPE_ACTIVATE      = 0x06;
 static const uint8_t MSG_TYPE_ACTIVATE_OK   = 0x07;
+static const uint8_t MSG_TYPE_SET_CONFIG    = 0x08;  // GW → IoT  push config update
+static const uint8_t MSG_TYPE_UNPAIR        = 0x09;  // GW → IoT  dissociate node
+static const uint8_t MSG_TYPE_SLEEP         = 0x0A;  // GW → IoT  command to deep sleep
 
 // =====================================================
 // Frame layout constants
@@ -137,6 +140,12 @@ extern float phVoltageAtNeutral;
 extern float phSlope;
 
 // =====================================================
+// Runtime config (updated via SET_CONFIG from gateway)
+// =====================================================
+extern float    gRuntimeShakeThresholdG;
+extern bool     gRuntimeShakeEnabled;
+
+// =====================================================
 // Global devices
 // =====================================================
 extern Adafruit_SSD1306 display;
@@ -195,6 +204,13 @@ void readSensorsRoutine();
 // Shake check (called from MpuTask at 20 Hz)
 // =====================================================
 void checkShakeAndAlert();
+
+// =====================================================
+// MPU6050 motion detection for deep sleep wake
+// Configures the MPU's internal motion engine to assert
+// the INT pin on shake, allowing EXT0 wakeup.
+// =====================================================
+bool mpuEnableMotionWakeInterrupt(float thresholdG);
 
 // =====================================================
 // Binary encoding helpers (used by lora_radio.cpp)

@@ -19,7 +19,7 @@ static void mpuTask(void *pv) {
   for (;;) {
     // Only check for shake once the gateway has activated the node.
     // This prevents spurious alerts during boot handling.
-    if (gNodeActive) {
+    if (gNodeActive && gRuntimeShakeEnabled) {
       if (xSemaphoreTake(gDataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         checkShakeAndAlert();
         xSemaphoreGive(gDataMutex);

@@ -10,8 +10,9 @@
 #include "otaa_manager.h"
 #include "wifi_store.h"
 #include "api_client.h"
-
-
+#include "hardware_ui.h"
+#include "audio_alert.h"
+#include "sd_logger.h"
 static String getGatewayHardwareIdString() {
   String configured = String(GATEWAY_DEVICE_ID);
   configured.trim();
@@ -25,7 +26,15 @@ static String getGatewayHardwareIdString() {
 namespace NormalMode {
 
 void begin() {
+  HardwareUI::setStatus(GatewayStatus::CONNECTED);
   Serial.println("[NORMAL] Starting gateway normal mode...");
+
+  // Defensive barrier: make sure no I2S DMA / WAV decoder leftover is
+  // sitting in heap before we bring WiFi + TLS up. A stuck audio pipeline
+  // would otherwise silently cost ~14 KB of heap right when the first
+  // cloud provisioning or telemetry POST needs it.
+  forceReleaseAudioResources();
+
   if (!initApp()) {
     Serial.println("[FATAL] initApp failed - runtime AES key not available");
     while (true) delay(100);
@@ -76,18 +85,35 @@ void begin() {
     Serial.println("[Gateway] Cloud provisioning already completed");
   }
 
+  // Fetch persisted config from backend — restores measureInterval, shakeThreshold,
+  // nodeActive, vocalAlerts settings that are otherwise lost after reflash.
+  {
+    Serial.println("[Gateway] Fetching persisted config from backend...");
+    ApiClient::GatewayConfigResult res;
+    if (ApiClient::fetchGatewayConfig(API_BASE_URL, gatewayHardwareId, res)) {
+      setMeasureIntervalMs(res.measureIntervalSec * 1000UL);
+      setNodeActiveFlag(res.nodeActive);
+      setVocalAlertsEnabled(res.gatewayVocalAlerts);
+      Serial.printf("[Gateway] Config restored: mi=%lu st=%.2f se=%d na=%d va=%d\n",
+                    (unsigned long)res.measureIntervalSec,
+                    res.shakeThreshold,
+                    (int)res.shakeEnabled,
+                    (int)res.nodeActive,
+                    (int)res.gatewayVocalAlerts);
+
+      // Queue hardware config to be transmitted to the IoT Node
+      queueSetConfig(res.shakeThreshold, res.shakeEnabled);
+    } else {
+      Serial.println("[Gateway] Config fetch failed — using defaults");
+    }
+  }
+
   if (!initLoRa()) {
     Serial.println("[FATAL] LoRa init failed");
     while (true) delay(100);
   }
 
-  if (!initSD()) {
-    Serial.println("[WARN] SD init failed - alert WAV playback will be unavailable");
-  }
 
-  if (!initAudio()) {
-    Serial.println("[WARN] Audio init failed - alert WAV playback will be unavailable");
-  }
 
   Serial.println("\n==============================================");
   Serial.println("Gateway Ready — commander mode");

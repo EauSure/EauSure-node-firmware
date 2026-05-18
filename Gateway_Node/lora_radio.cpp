@@ -17,6 +17,11 @@ static volatile bool cadDone     = false;
 static volatile bool cadDetected = false;
 static bool gCommandInFlight = false;
 
+// Pending config
+static bool gHasPendingConfig = false;
+static float gPendingShakeThresholdG = 1.1f;
+static bool gPendingShakeEnabled = true;
+
 // =====================================================
 // ISR — DIO0 signals CadDone
 // =====================================================
@@ -326,6 +331,79 @@ bool sendHeartbeatReq() {
 }
 
 // =====================================================
+// sendSetConfig  (MSG_TYPE_SET_CONFIG = 0x08)
+// Payload JSON: {"st":1.1,"se":1}
+//   st = shakeThreshold (float, g)
+//   se = shakeEnabled   (0/1)
+// measureInterval and nodeActive are managed by the gateway,
+// not forwarded to the node.
+// =====================================================
+bool sendSetConfig(float shakeThresholdG, bool shakeEnabled) {
+  StaticJsonDocument<64> doc;
+  doc["st"] = round(shakeThresholdG * 100.0f) / 100.0f;
+  doc["se"] = shakeEnabled ? 1 : 0;
+
+  String json;
+  serializeJson(doc, json);
+
+  Serial.printf("[GW] Sending SET_CONFIG: %s\n", json.c_str());
+
+  uint8_t plain[64];
+  size_t  plainLen = json.length();
+  memcpy(plain, json.c_str(), plainLen);
+
+  return secureCommand(MSG_TYPE_SET_CONFIG, plain, (uint16_t)plainLen);
+}
+
+// =====================================================
+// Queued Configuration
+// =====================================================
+void queueSetConfig(float shakeThresholdG, bool shakeEnabled) {
+  gPendingShakeThresholdG = shakeThresholdG;
+  gPendingShakeEnabled = shakeEnabled;
+  gHasPendingConfig = true;
+  Serial.printf("[GW] Queued SET_CONFIG: st=%.2f se=%d (will send on next wake)\n", shakeThresholdG, shakeEnabled);
+}
+
+bool hasPendingConfig() {
+  return gHasPendingConfig;
+}
+
+bool sendPendingConfig() {
+  if (!gHasPendingConfig) return false;
+  Serial.println("[GW] Node is awake. Transmitting queued SET_CONFIG...");
+  bool ok = sendSetConfig(gPendingShakeThresholdG, gPendingShakeEnabled);
+  if (ok) {
+    gHasPendingConfig = false;
+    Serial.println("[GW] Queued SET_CONFIG successfully delivered");
+  } else {
+    Serial.println("[GW] Queued SET_CONFIG delivery failed (will retry on next wake)");
+  }
+  return ok;
+}
+
+// =====================================================
+// sendUnpair  (MSG_TYPE_UNPAIR = 0x09)
+// No payload — tells node to erase pairing and reboot
+// into pairing mode.
+// =====================================================
+bool sendUnpair() {
+  Serial.println("[GW] Sending UNPAIR to IoT node...");
+  return secureCommand(MSG_TYPE_UNPAIR, nullptr, 0);
+}
+
+// =====================================================
+// sendSleepReq  (MSG_TYPE_SLEEP = 0x0A)
+// Commands the node to deep sleep for X seconds
+// =====================================================
+bool sendSleepReq(uint32_t sleepDurationSec) {
+  Serial.printf("[GW] Sending SLEEP command: %lu seconds\n", sleepDurationSec);
+  uint8_t payload[4];
+  writeU32BE(payload, sleepDurationSec);
+  return secureCommand(MSG_TYPE_SLEEP, payload, 4);
+}
+
+// =====================================================
 // parseGenericFrame — shared header parser
 // =====================================================
 static bool parseGenericFrame(const uint8_t *frame, size_t frameLen,
@@ -405,6 +483,21 @@ bool parseAndDispatchDataFrame(const uint8_t *frame, size_t frameLen,
 
   // ACK FIRST — before JSON parse, WiFi, or audio
   sendAck(seq);
+
+  // Send queued config while node is still listening
+  if (gHasPendingConfig) {
+    // Slight delay to ensure the Node processed the ACK
+    delay(150);
+    sendPendingConfig();
+  }
+
+  // ── IMPORTANT: SEND SLEEP REQUEST ──
+  // Send the node to deep sleep until the next measurement cycle
+  delay(150);
+  #include "otaa_manager.h"
+  uint32_t sleepDurationSec = getMeasureIntervalMs() / 1000;
+  if (sleepDurationSec < 30) sleepDurationSec = 30;
+  sendSleepReq(sleepDurationSec);
 
   handleDataPayload((const char *)plain, rssi, snr);
   return true;

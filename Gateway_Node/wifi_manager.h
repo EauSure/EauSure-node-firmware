@@ -16,6 +16,9 @@ namespace WiFiManager {
     // Check if connected
     bool isConnected();
 
+    // Call API to unprovision gateway
+    bool unprovisionGateway();
+
     // Submit sensor data to API
     bool submitSensorData(
         const char* nodeId,

@@ -20,6 +20,17 @@ void requestMeasureNow();
 void notifyMeasureRequestDispatched();
 void notifyMeasureResponseHandled();
 
+// Config update from SET_CONFIG MQTT command
+void setMeasureIntervalMs(uint32_t ms);
+uint32_t getMeasureIntervalMs();
+void setNodeActiveFlag(bool active);
+void setVocalAlertsEnabled(bool enabled);
+bool areVocalAlertsEnabled();
+bool isNodeActiveConfigured();
+
+// Dissociation — erase pairing and reboot into pairing mode
+void erasePairingAndEnterPairingMode();
+
 // =====================================================
 // Incoming frame handlers — called from lora_radio.cpp
 // =====================================================

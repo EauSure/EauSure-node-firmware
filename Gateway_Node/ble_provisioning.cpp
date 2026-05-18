@@ -25,6 +25,7 @@ namespace {
   String gChunkBuffer;
   int gChunkExpectedTotal = 0;
   int gChunkNextIndex = 0;
+  bool gActive = false;
 
   void resetChunkState() {
     gChunkTransferId = "";
@@ -354,7 +355,16 @@ namespace {
       gChunkBuffer.reserve(totalLength);
     }
 
-    if (transferId != gChunkTransferId || total != gChunkExpectedTotal || index != gChunkNextIndex) {
+    if (transferId != gChunkTransferId || total != gChunkExpectedTotal) {
+      resetChunkState();
+      notifyProvisioningError("BLE chunk context mismatch");
+      return true;
+    }
+
+    if (index < gChunkNextIndex) {
+      // Idempotent duplicate chunk received due to client retry - ignore it
+      return true;
+    } else if (index > gChunkNextIndex) {
       resetChunkState();
       notifyProvisioningError("BLE chunk order mismatch");
       return true;
@@ -453,6 +463,8 @@ void begin(const String& gatewayHardwareId, const String& gatewayDisplayName) {
   adv->addServiceUUID(SERVICE_UUID);
   adv->start();
 
+  gActive = true;
+
   Serial.printf(
     "[BLE] Provisioning BLE started for %s (%s)\n",
     gGatewayHardwareId.c_str(),
@@ -492,6 +504,11 @@ void restartAdvertising() {
 
 void stop() {
   BLEDevice::deinit(true);
+  gActive = false;
+}
+
+bool isActive() {
+  return gActive;
 }
 
 }

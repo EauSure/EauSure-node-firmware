@@ -14,6 +14,8 @@ namespace NodePairingMode {
   bool isComplete();
   bool shouldPauseMqtt();
 
+  void startScanning();
+  void cancelPairing();
   bool hasCandidate();
   PairingCandidateInfo getCandidate();
 

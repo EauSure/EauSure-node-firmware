@@ -1,5 +1,6 @@
 #include "provisioning_mode.h"
 #include "ble_provisioning.h"
+#include "audio_alert.h"
 #include "config.h"
 #include "wifi_store.h"
 #include <WiFi.h>
@@ -47,6 +48,13 @@ namespace ProvisioningMode {
 void begin() {
   gComplete = false;
   Serial.println("[PROVISIONING] Starting provisioning mode...");
+
+  // Defensive barrier: never let a stray I2S / WAV decoder allocation
+  // sit in heap while we bring the BLE stack up. BLE GATT + advertising
+  // allocates several kilobytes at begin(), and any audio leftover would
+  // compete for the same heap region.
+  forceReleaseAudioResources();
+
   BleProvisioning::begin(getGatewayHardwareId(), getGatewayDisplayName());
 }
 

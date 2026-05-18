@@ -1,12 +1,14 @@
 #include "wifi_manager.h"
 #include "mqtt_gateway.h"
 #include "tls_utils.h"
+#include "wifi_store.h"
 
 namespace WiFiManager {
 
     namespace {
         String gSsid = "";
         String gPassword = "";
+        uint32_t gFirstFailureMs = 0;
 
         String extractHostFromUrl(const String& url) {
             int start = 0;
@@ -108,6 +110,7 @@ namespace WiFiManager {
 
     bool reconnect() {
         if (isConnected()) {
+            gFirstFailureMs = 0;
             return true;
         }
 
@@ -119,7 +122,21 @@ namespace WiFiManager {
         Serial.println("[WiFi] Reconnecting...");
         WiFi.disconnect();
         delay(100);
-        return init(gSsid.c_str(), gPassword.c_str());
+        bool ok = init(gSsid.c_str(), gPassword.c_str());
+        
+        if (ok) {
+            gFirstFailureMs = 0;
+        } else {
+            if (gFirstFailureMs == 0) {
+                gFirstFailureMs = millis();
+            } else if (millis() - gFirstFailureMs > 180000) { // 3 minutes
+                Serial.println("[WiFi][FATAL] Failed to reconnect for 3 minutes. Erasing credentials and restarting to Provisioning mode...");
+                WifiStore::clear();
+                delay(1000);
+                ESP.restart();
+            }
+        }
+        return ok;
     }
 
     bool submitSensorData(
@@ -247,6 +264,59 @@ namespace WiFiManager {
         http.end();
         MqttGateway::setExclusiveTlsWindow(false);
         Serial.println("[WiFi][DIAG] ===== Sensor Submit end =====");
+        return success;
+    }
+
+    bool unprovisionGateway() {
+        if (!isConnected()) {
+            Serial.println("[WiFi] Cannot unprovision via API (no Wi-Fi)");
+            return false;
+        }
+
+        String gatewayHardwareId = String(GATEWAY_DEVICE_ID);
+        gatewayHardwareId.trim();
+        gatewayHardwareId.toUpperCase();
+        if (!gatewayHardwareId.startsWith("GW-")) {
+            gatewayHardwareId = "GW-" + gatewayHardwareId;
+        }
+
+        String url = String(API_BASE_URL) + "/api/registry/gateways/" + gatewayHardwareId + "/unprovision";
+        String host = extractHostFromUrl(url);
+        
+        Serial.println("[WiFi] Unprovisioning Gateway on API: " + url);
+        MqttGateway::setExclusiveTlsWindow(true);
+
+        WiFiClientSecure client;
+        if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "unprovision HTTPS POST")) {
+            MqttGateway::setExclusiveTlsWindow(false);
+            return false;
+        }
+
+        HTTPClient http;
+        http.setReuse(false);
+        http.setTimeout(10000);
+        http.setConnectTimeout(10000);
+
+        if (!http.begin(client, url)) {
+            Serial.println("[WiFi] Failed to begin HTTP connection for unprovision");
+            MqttGateway::setExclusiveTlsWindow(false);
+            return false;
+        }
+
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("X-Gateway-Key", API_KEY);
+        
+        int httpCode = http.POST("{}");
+        bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
+        
+        if (success) {
+            Serial.println("[WiFi] Gateway unprovisioned on API successfully");
+        } else {
+            Serial.printf("[WiFi] Unprovision API Error: %d %s\n", httpCode, http.getString().c_str());
+        }
+
+        http.end();
+        MqttGateway::setExclusiveTlsWindow(false);
         return success;
     }
 

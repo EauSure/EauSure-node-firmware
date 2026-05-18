@@ -1,6 +1,7 @@
 #include "otaa_manager.h"
 #include "lora_radio.h"
 #include "app_state.h"
+#include "node_pairing_store.h"
 #include <ArduinoJson.h>
 
 // =====================================================
@@ -26,14 +27,26 @@ namespace {
   bool     gHeartbeatPending = false; // true after HEARTBEAT_REQ until HEARTBEAT_ACK or timeout
   bool     gMeasurePending  = false;  // true after MEASURE_REQ until MEASURE_RESP or timeout
 
+  // Gateway-side configuration (populated from SET_CONFIG or backend fetch)
+  bool     gNodeActiveConfig   = true;   // true = gateway sends MEASURE_REQ; false = node in standby
+  bool     gVocalAlertsEnabled = true;   // true = gateway plays local audio alerts
+
   // How long to wait between ACTIVATE retries at boot (ms)
   static const uint32_t ACTIVATE_RETRY_MS  = 8000;
-  // Measure interval
-  static const uint32_t MEASURE_INTERVAL_MS   = 60000;
-  // Heartbeat interval
-  static const uint32_t HEARTBEAT_INTERVAL_MS = 15000;
+  // Measure interval — default 60s, overridable via SET_CONFIG
+  static uint32_t MEASURE_INTERVAL_MS   = 60000;
+  // Heartbeat interval — auto-aligned to MEASURE_INTERVAL_MS / 2 (min 15s, max 30min)
+  static uint32_t HEARTBEAT_INTERVAL_MS = 30000;
   static const uint32_t HEARTBEAT_RESPONSE_TIMEOUT_MS = 8000;
   static const uint32_t MEASURE_RESPONSE_TIMEOUT_MS = 12000;
+
+  // Helper: compute heartbeat interval from measure interval
+  static uint32_t computeHeartbeatIntervalMs(uint32_t measureMs) {
+    uint32_t hb = measureMs / 2;
+    if (hb < 15000UL)    hb = 15000UL;     // min 15s
+    if (hb > 1800000UL)  hb = 1800000UL;   // max 30min
+    return hb;
+  }
 }
 
 // =====================================================
@@ -56,7 +69,12 @@ void initOtaaManager() {
   gMeasurePending  = false;
   gMeasurePendingAt = 0;
 
-  Serial.println("[OTAA] Manager ready — will send ACTIVATE on first tick");
+  // Align heartbeat with current measure interval
+  HEARTBEAT_INTERVAL_MS = computeHeartbeatIntervalMs(MEASURE_INTERVAL_MS);
+
+  Serial.printf("[OTAA] Manager ready — measure=%lu ms heartbeat=%lu ms\n",
+                (unsigned long)MEASURE_INTERVAL_MS, (unsigned long)HEARTBEAT_INTERVAL_MS);
+  Serial.println("[OTAA] Will send ACTIVATE on first tick");
 }
 
 // =====================================================
@@ -133,7 +151,8 @@ void otaaTick() {
   }
 
   // ── Phase 3: Periodic MEASURE_REQ ──
-  if ((now - gLastMeasureAt >= MEASURE_INTERVAL_MS) &&
+  if (gNodeActiveConfig && gNodeActive &&  // skip if node deactivated
+      (now - gLastMeasureAt >= MEASURE_INTERVAL_MS) &&
       (now - gLastCommandTxAt >= schedulerGapMs) &&
       (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
     gLastCommandTxAt = now;
@@ -198,6 +217,58 @@ void notifyMeasureRequestDispatched() {
                 (unsigned long)gMeasurePendingAt);
 }
 
+void setMeasureIntervalMs(uint32_t ms) {
+  if (ms < 30000UL)    ms = 30000UL;    // min 30s
+  if (ms > 28800000UL) ms = 28800000UL; // max 8h
+  MEASURE_INTERVAL_MS = ms;
+  HEARTBEAT_INTERVAL_MS = computeHeartbeatIntervalMs(ms);
+  Serial.printf("[OTAA] measureInterval updated to %lu ms (heartbeat=%lu ms)\n",
+                (unsigned long)ms, (unsigned long)HEARTBEAT_INTERVAL_MS);
+}
+
+uint32_t getMeasureIntervalMs() {
+  return MEASURE_INTERVAL_MS;
+}
+
+void setNodeActiveFlag(bool active) {
+  gNodeActiveConfig = active;
+  Serial.printf("[OTAA] nodeActive config updated: %d\n", (int)active);
+}
+
+void setVocalAlertsEnabled(bool enabled) {
+  gVocalAlertsEnabled = enabled;
+  Serial.printf("[OTAA] vocalAlerts config updated: %d\n", (int)enabled);
+}
+
+bool areVocalAlertsEnabled() {
+  return gVocalAlertsEnabled;
+}
+
+bool isNodeActiveConfigured() {
+  return gNodeActiveConfig;
+}
+
+void erasePairingAndEnterPairingMode() {
+  Serial.println("[OTAA] Erasing node pairing — gateway will re-enter pairing mode");
+
+  // Erase local AES key and pairing data
+  NodePairingStore::clear();
+  gRuntimeEncKeyLoaded = false;
+  memset(gRuntimeEncKey, 0, sizeof(gRuntimeEncKey));
+
+  // Reset OTAA state
+  gNodePaired      = false;
+  gNodeActive      = false;
+  gNodeMac         = "";
+  gActivatePending = true;
+  gHeartbeatPending = false;
+  gMeasurePending   = false;
+
+  Serial.println("[OTAA] Pairing erased — rebooting into NODE_PAIRING mode");
+  delay(500);
+  ESP.restart();
+}
+
 void notifyMeasureResponseHandled() {
   if (!gMeasurePending) {
     return;
@@ -236,14 +307,14 @@ void handleActivateOk(const char *json, int rssi, float snr) {
 
   lastAcceptedSeq  = 0;
 
-  // Kick off timers from now so we don't immediately fire
-  gLastMeasureAt   = millis();
+  // Schedule first MEASURE_REQ in 10 seconds to quickly push config and send node to sleep
+  gLastMeasureAt   = millis() - MEASURE_INTERVAL_MS + 10000;
   gLastHeartbeatAt = millis();
   gLastReplyRxAt   = millis();
 
   Serial.printf("[OTAA] ACTIVATE_OK — node paired! mac=%s state=%s RSSI=%d SNR=%.1f\n",
                 mac.c_str(), state.c_str(), rssi, snr);
-  Serial.println("[OTAA] Gateway is now commanding — MEASURE_REQ in 60 s");
+  Serial.println("[OTAA] Gateway is now commanding — first MEASURE_REQ in 10 s");
 }
 
 // =====================================================

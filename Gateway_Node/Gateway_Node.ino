@@ -6,6 +6,11 @@
 #include "mqtt_gateway.h"
 #include "otaa_manager.h"
 #include "telemetry.h"
+#include "hardware_ui.h"
+#include "audio_alert.h"
+#include "sd_logger.h"
+#include "wifi_manager.h"
+#include <esp_bt.h>
 
 enum class BootMode {
   PROVISIONING,
@@ -17,11 +22,27 @@ static BootMode gMode = BootMode::PROVISIONING;
 static String gLastPublishedCandidateId = "";
 
 void setup() {
+  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   Serial.begin(115200);
   delay(300);
 
+  HardwareUI::begin();
   WifiStore::begin();
   NodePairingStore::begin();
+
+  // IMPORTANT: SD mount is deferred on purpose.
+  //
+  // Cold-boot rage case: on power-on the 3V3 rail is still settling while
+  // LoRa + MAX98357A + ESP32 all draw their inrush, and a fresh MicroSD
+  // needs ~1s of post-VCC idle before it reliably accepts CMD0. Mounting
+  // here was failing on cold plug-in but working after a soft reset
+  // because the rail was already stable.
+  //
+  // Every SD consumer (audio_alert, future FUOTA) already goes through
+  // ensureSdReady(), which mounts on demand with backoff. By the time
+  // the first demand happens (audio alert, factory-reset voice, OTA...)
+  // the rail has been stable for many seconds and BLE/WiFi are quiet.
+  Serial.println("[BOOT] SD mount deferred — will mount on first demand");
 
   if (!WifiStore::hasWifiCredentials()) {
     gMode = BootMode::PROVISIONING;
@@ -84,6 +105,20 @@ void loop() {
       break;
 
     case BootMode::NORMAL:
+      // Check if the UI task requested a factory reset while WiFi was up.
+      // The UI task cannot safely make HTTPS calls (heap corruption with
+      // concurrent TLS clients), so we handle it here in the main loop
+      // context where MQTT is already managed.
+      if (HardwareUI::isFactoryResetRequested()) {
+        Serial.println("[BOOT] Factory reset requested — notifying backend from main loop");
+        MqttGateway::setExclusiveTlsWindow(true);
+        delay(100);
+        WiFiManager::unprovisionGateway();
+        delay(200);
+        Serial.println("[BOOT] Unprovision done — rebooting");
+        ESP.restart();
+      }
+
       if (!shouldPauseBackgroundWork() && !telemetryHasPendingUpload()) {
         MqttGateway::loop();
       }

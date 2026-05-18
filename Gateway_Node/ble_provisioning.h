@@ -10,4 +10,5 @@ namespace BleProvisioning {
   void sendStatus(bool success, const String& message, bool final = true);
   void restartAdvertising();
   void stop();
+  bool isActive();
 }

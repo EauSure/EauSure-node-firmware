@@ -51,9 +51,6 @@ static String buildSensorJson() {
 // Runs on Core 1, priority 1 (below ControlTask priority 2).
 // =====================================================
 static void sensorsTask(void *pv) {
-  // Store own handle so ControlTask can notify us
-  gSensorTaskHandle = xTaskGetCurrentTaskHandle();
-
   Serial.println("[SENSOR TASK] Ready — waiting for MEASURE_REQ notification");
 
   for (;;) {
@@ -101,7 +98,7 @@ void startSensorsTask() {
     12288,
     nullptr,
     1,          // Priority 1 — below ControlTask(2) and MpuTask(2)
-    nullptr,    // Handle stored via xTaskGetCurrentTaskHandle() inside the task
+    &gSensorTaskHandle, // Store handle immediately
     1           // Core 1
   );
 }

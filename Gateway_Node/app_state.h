@@ -24,6 +24,9 @@ static const uint8_t MSG_TYPE_HEARTBEAT_REQ = 0x04;
 static const uint8_t MSG_TYPE_HEARTBEAT_ACK = 0x05;
 static const uint8_t MSG_TYPE_ACTIVATE      = 0x06;
 static const uint8_t MSG_TYPE_ACTIVATE_OK   = 0x07;
+static const uint8_t MSG_TYPE_SET_CONFIG    = 0x08;  // GW → IoT  push config update
+static const uint8_t MSG_TYPE_UNPAIR        = 0x09;  // GW → IoT  dissociate node
+static const uint8_t MSG_TYPE_SLEEP         = 0x0A;  // GW → IoT  command to deep sleep
 
 // =====================================================
 // Frame layout constants

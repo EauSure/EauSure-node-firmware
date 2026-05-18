@@ -8,6 +8,8 @@
 #include "wifi_manager.h"
 #include "node_pairing_mode.h"
 #include "tls_utils.h"
+#include "lora_radio.h"
+#include "otaa_manager.h"
 
 namespace {
 
@@ -83,8 +85,64 @@ void handlePairingKeyReady(JsonDocument& doc) {
                 ok ? "accepted" : "ignored");
 }
 
+void handleSetConfig(JsonDocument& doc) {
+  JsonObject config = doc["config"];
+  if (config.isNull()) {
+    Serial.println("[MQTT] SET_CONFIG missing config object");
+    return;
+  }
+
+  // ── Node-side config (forward to node via LoRa) ──
+  float shakeThreshold = config["shakeThreshold"] | 1.1f;
+  bool  shakeEnabled   = config["shakeEnabled"]   | true;
+
+  // ── Gateway-side config (apply locally) ──
+  uint32_t measureIntervalSec = config["measureInterval"] | 0;
+  bool hasNodeActive         = !config["nodeActive"].isNull();
+  bool nodeActive            = config["nodeActive"] | true;
+  bool hasVocalAlerts        = !config["gatewayVocalAlerts"].isNull();
+  bool vocalAlerts           = config["gatewayVocalAlerts"] | true;
+
+  Serial.printf("[MQTT] SET_CONFIG st=%.2f se=%d mi=%lu na=%d va=%d\n",
+                shakeThreshold, (int)shakeEnabled,
+                (unsigned long)measureIntervalSec, (int)nodeActive, (int)vocalAlerts);
+
+  // Apply gateway-side config
+  if (measureIntervalSec > 0) {
+    setMeasureIntervalMs(measureIntervalSec * 1000UL);
+  }
+  if (hasNodeActive) {
+    setNodeActiveFlag(nodeActive);
+  }
+  if (hasVocalAlerts) {
+    setVocalAlertsEnabled(vocalAlerts);
+  }
+
+  // Queue shake config to be sent on next node wake
+  queueSetConfig(shakeThreshold, shakeEnabled);
+  Serial.println("[MQTT] SET_CONFIG queued for next LoRa transmission");
+}
+
+void handleUnpairNode(JsonDocument& doc) {
+  Serial.println("[MQTT] UNPAIR_NODE command received");
+
+  // Send UNPAIR LoRa frame to node — node will erase pairing and reboot
+  bool ok = sendUnpair();
+  Serial.printf("[MQTT] UNPAIR LoRa result=%s\n", ok ? "OK" : "FAIL");
+
+  // Gateway side: erase local pairing state regardless of LoRa result
+  // (node may be unreachable but we still clean up gateway side)
+  erasePairingAndEnterPairingMode();
+}
+
 void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr = String(topic);
+
+  // Empty retained messages arrive after we clear them; ignore them silently
+  if (length == 0) {
+    return;
+  }
+
   String body;
   body.reserve(length + 1);
 
@@ -99,6 +157,9 @@ void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println("[MQTT] Invalid JSON payload");
     return;
   }
+
+  // Clear retained message from broker so we don't reprocess on reconnect
+  gMqttClient.publish(topicStr.c_str(), (const uint8_t*)"", 0, true);
 
   String cmd = String(doc["cmd"] | "");
   cmd.toUpperCase();
@@ -116,6 +177,23 @@ void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
   if (cmd == "SCAN_NODES") {
     Serial.println("[MQTT] SCAN_NODES command received");
     NodePairingMode::startScanning();
+    return;
+  }
+
+  if (cmd == "CANCEL_PAIRING") {
+    Serial.println("[MQTT] CANCEL_PAIRING command received");
+    NodePairingMode::cancelPairing();
+    return;
+  }
+
+  if (cmd == "SET_CONFIG") {
+    Serial.println("[MQTT] SET_CONFIG command received");
+    handleSetConfig(doc);
+    return;
+  }
+
+  if (cmd == "UNPAIR_NODE") {
+    handleUnpairNode(doc);
     return;
   }
 
@@ -290,6 +368,45 @@ bool publishCandidateFound(const String& nodeId, const String& nodeName, const S
   Serial.printf("[MQTT] Publish candidate_found node=%s result=%s\n",
                 nodeId.c_str(),
                 ok ? "OK" : "FAIL");
+  return ok;
+}
+
+bool publishScanComplete(bool found) {
+  ensureTopics();
+
+  if (!connectBroker()) return false;
+  if (!ensureSubscribed()) return false;
+
+  StaticJsonDocument<64> doc;
+  doc["event"] = "scan_complete";
+  doc["found"] = found;
+
+  String out;
+  serializeJson(doc, out);
+
+  bool ok = gMqttClient.publish(gEventTopic.c_str(), out.c_str(), false);
+  Serial.printf("[MQTT] Publish scan_complete found=%d result=%s\n",
+                (int)found, ok ? "OK" : "FAIL");
+  return ok;
+}
+
+bool publishPairingFailed(const String& nodeId, const String& reason) {
+  ensureTopics();
+
+  if (!connectBroker()) return false;
+  if (!ensureSubscribed()) return false;
+
+  StaticJsonDocument<256> doc;
+  doc["event"]  = "pairing_failed";
+  doc["nodeId"] = nodeId;
+  doc["reason"] = reason;
+
+  String out;
+  serializeJson(doc, out);
+
+  bool ok = gMqttClient.publish(gEventTopic.c_str(), out.c_str(), false);
+  Serial.printf("[MQTT] Publish pairing_failed node=%s result=%s\n",
+                nodeId.c_str(), ok ? "OK" : "FAIL");
   return ok;
 }
 

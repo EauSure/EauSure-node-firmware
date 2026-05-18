@@ -24,6 +24,9 @@ uint32_t gProvisionStartAtMs = 0;
 bool gRebootRequested = false;
 uint32_t gRebootAtMs = 0;
 bool gResumingPendingProvision = false;
+bool gProveCompleted = false;           // true after successful /prove
+uint32_t gProveCompletedAtMs = 0;
+static const uint32_t PROVE_WAIT_TIMEOUT_MS = 30000; // how long to wait for /provision after /prove
 String gApSsid = "";
 String gApPassword = "";
 String gStatusTitle = "PAIRING";
@@ -125,12 +128,12 @@ void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
       break;
     case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
       Serial.printf("[PAIRING][WIFI] STA disconnected from SoftAP aid=%u\n", info.wifi_ap_stadisconnected.aid);
-      if (!gProvisionPending && !gProvisionInProgress && !gComplete) {
+      if (!gProvisionPending && !gProvisionInProgress && !gComplete && !gProveCompleted) {
         gApRestartRequested = true;
         gApRestartAtMs = millis() + 500;
         Serial.println("[PAIRING][WIFI] Scheduling SoftAP refresh after client disconnect");
       } else {
-        Serial.println("[PAIRING][WIFI] Skipping SoftAP refresh because provisioning is active");
+        Serial.println("[PAIRING][WIFI] Skipping SoftAP refresh (provisioning pending or /prove awaiting /provision)");
       }
       break;
     case ARDUINO_EVENT_WIFI_STA_CONNECTED:
@@ -561,6 +564,11 @@ void handleProve() {
   String payload;
   serializeJson(resp, payload);
   gServer.send(200, "application/json", payload);
+
+  // Mark /prove as completed — block AP refresh until /provision arrives or timeout
+  gProveCompleted = true;
+  gProveCompletedAtMs = millis();
+  Serial.println("[PAIRING] /prove completed — blocking AP refresh for 30s awaiting /provision");
 }
 
 void handleProvision() {
@@ -654,6 +662,8 @@ void begin() {
   gProvisionPending = false;
   gProvisionInProgress = false;
   gApRestartRequested = false;
+  gProveCompleted = false;
+  gProveCompletedAtMs = 0;
   gApRestartAtMs = 0;
   gProvisionStartAtMs = 0;
   gRebootRequested = false;
@@ -707,7 +717,13 @@ void loop() {
 
   gServer.handleClient();
 
-  if (gApRestartRequested && !gProvisionPending && !gProvisionInProgress && !gComplete) {
+  // Timeout /prove wait — if no /provision arrives in 30s, allow AP refresh again
+  if (gProveCompleted && (int32_t)(millis() - gProveCompletedAtMs) >= (int32_t)PROVE_WAIT_TIMEOUT_MS) {
+    Serial.println("[PAIRING] /prove wait timeout — AP refresh re-enabled");
+    gProveCompleted = false;
+  }
+
+  if (gApRestartRequested && !gProvisionPending && !gProvisionInProgress && !gComplete && !gProveCompleted) {
     if ((int32_t)(millis() - gApRestartAtMs) >= 0) {
       gApRestartRequested = false;
       Serial.println("[PAIRING][WIFI] Refreshing SoftAP for next pairing step");
