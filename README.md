@@ -143,7 +143,7 @@ Pour garantir la sécurité, la fiabilité et la conformité aux contraintes de 
 
 <div align="center">
   <img
-    src="Schematics/trame_LoRa.svg"
+    src="Schematics/trame_loRa.svg"
     alt="Structure détaillée de la trame LoRa EauSûre"
     style="background-color: #ffffff; padding: 12px; border-radius: 12px; border: 1px solid #e1e8ed; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 100%;"
   />
