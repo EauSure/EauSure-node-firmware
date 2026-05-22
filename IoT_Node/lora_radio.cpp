@@ -2,6 +2,7 @@
 #include "app_state.h"
 #include "pairing_store.h"
 #include "esp_mac.h"
+#include <Update.h>
 
 // =====================================================
 // DIO pin roles (SX1276 DIO mapping we configure)
@@ -56,6 +57,25 @@ static volatile bool cadDetected = false;
 // TxDone / RxDone flags set by ISRs
 static volatile bool txDoneFlag  = false;
 static volatile bool rxDoneFlag  = false;
+
+struct FuotaRxState {
+  bool active = false;
+  bool readyToCommit = false;
+  uint32_t sessionId = 0;
+  uint32_t expectedSize = 0;
+  uint32_t receivedSize = 0;
+  uint32_t expectedChunkIndex = 0;
+  uint16_t chunkSize = 0;
+  uint16_t totalChunks = 0;
+  String version;
+  String md5;
+};
+
+static FuotaRxState gFuotaRx;
+
+static void resetFuotaRxState() {
+  gFuotaRx = FuotaRxState{};
+}
 
 // =====================================================
 // ISRs
@@ -311,6 +331,20 @@ static bool loraReadRaw(uint8_t *buf, size_t cap, size_t &outLen, uint32_t timeo
 // Radio is already in RxCont when this is called
 // (cadWaitAndSend ends with enterRxCont).
 // =====================================================
+namespace {
+
+struct DeferredCommand {
+  bool pending = false;
+  uint8_t buf[MAX_FRAME_LEN];
+  size_t len = 0;
+  int rssi = 0;
+  float snr = 0.0f;
+};
+
+DeferredCommand gDeferredCmd;
+
+} // namespace
+
 static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 1500) {
   uint8_t  buf[MAX_FRAME_LEN];
   size_t   len   = 0;
@@ -344,11 +378,17 @@ static bool waitForAck(uint32_t seq, uint32_t timeoutMs = 1500) {
 
     // ── ONLY process ACK frames here ──
     if (buf[1] != MSG_TYPE_ACK) {
-      // IMPORTANT FIX:
-      // Do NOT process or ACK commands here.
-      // Let ControlTask (pollCommandFrame) handle them safely
-      // after full AES-GCM authentication.
-      Serial.printf("[ACK WAIT] non-ACK frame (type=0x%02X) ignored\n", buf[1]);
+      if (gAckWaitActive && len <= sizeof(gDeferredCmd.buf)) {
+        memcpy(gDeferredCmd.buf, buf, len);
+        gDeferredCmd.len = len;
+        gDeferredCmd.rssi = LoRa.packetRssi();
+        gDeferredCmd.snr = LoRa.packetSnr();
+        gDeferredCmd.pending = true;
+        Serial.printf("[ACK WAIT] deferred command type=0x%02X — will run after DATA ACK window\n",
+                      buf[1]);
+      } else {
+        Serial.printf("[ACK WAIT] non-ACK frame (type=0x%02X) ignored\n", buf[1]);
+      }
       continue;
     }
 
@@ -428,6 +468,7 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
     Serial.printf("[LORA TX] type=0x%02X seq=%lu attempt=%d cadWaitAndSend=OK\n",
                   msgType, (unsigned long)seq, attempt + 1);
 
+    delay(120);
     bool acked = waitForAck(seq, ackTimeoutMs);
 
     if (acked) return true;
@@ -446,6 +487,14 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
   return false;
 }
 
+static void processDeferredCommandIfAny() {
+  if (!gDeferredCmd.pending) {
+    return;
+  }
+  Serial.println("[LoRa] Processing deferred gateway command");
+  pollCommandFrame(0);
+}
+
 // =====================================================
 // pollCommandFrame
 //
@@ -457,11 +506,25 @@ static bool secureSend(uint8_t msgType, uint32_t seq,
 bool pollCommandFrame(uint32_t timeoutMs) {
   uint8_t buf[MAX_FRAME_LEN];
   size_t  len = 0;
+  int     rssi = 0;
+  float   snr  = 0.0f;
 
-  if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) return false;
+  if (gDeferredCmd.pending) {
+    memcpy(buf, gDeferredCmd.buf, gDeferredCmd.len);
+    len = gDeferredCmd.len;
+    rssi = gDeferredCmd.rssi;
+    snr = gDeferredCmd.snr;
+    gDeferredCmd.pending = false;
+    Serial.println("[POLL] deferred command from ACK-wait window");
+  } else if (!loraReadRaw(buf, sizeof(buf), len, timeoutMs)) {
+    return false;
+  } else {
+    rssi = LoRa.packetRssi();
+    snr = LoRa.packetSnr();
+  }
 
   Serial.printf("[RX] packet detected: %u bytes  RSSI=%d dBm  SNR=%.1f dB\n",
-                (unsigned)len, LoRa.packetRssi(), LoRa.packetSnr());
+                (unsigned)len, rssi, snr);
 
   if (len < HEADER_LEN + GCM_TAG_LEN + CRC_LEN) {
     Serial.println("[POLL] frame too short — discarded");
@@ -692,6 +755,211 @@ bool pollCommandFrame(uint32_t timeoutMs) {
       break;
     }
 
+    case MSG_TYPE_FUOTA_BEGIN: {
+      if (cipherLen == 0) {
+        Serial.println("[FUOTA] BEGIN payload empty");
+        break;
+      }
+
+      StaticJsonDocument<384> doc;
+      const DeserializationError jerr = deserializeJson(doc, (const char*)plain);
+      if (jerr != DeserializationError::Ok) {
+        Serial.printf("[FUOTA] BEGIN JSON parse error: %s\n", jerr.c_str());
+        break;
+      }
+
+      const uint32_t sessionId   = doc["sid"].as<uint32_t>();
+      const uint32_t totalSize   = doc["sz"].as<uint32_t>();
+      const uint16_t chunkSize   = doc["cs"].as<uint16_t>();
+      const uint16_t totalChunks = doc["tc"].as<uint16_t>();
+      const String version = doc["v"].as<const char*>();
+      const String md5     = doc["m"].as<const char*>();
+
+      if (sessionId == 0 || totalSize == 0 || chunkSize == 0 || totalChunks == 0) {
+        Serial.printf("[FUOTA] BEGIN invalid metadata sid=%lu sz=%lu cs=%u tc=%u plainLen=%u\n",
+                      (unsigned long)sessionId,
+                      (unsigned long)totalSize,
+                      (unsigned)chunkSize,
+                      (unsigned)totalChunks,
+                      (unsigned)cipherLen);
+        break;
+      }
+
+      if (gFuotaRx.active && gFuotaRx.sessionId != sessionId) {
+        Serial.println("[FUOTA] BEGIN received while another session is active — aborting previous state");
+        Update.abort();
+        resetFuotaRxState();
+      }
+
+      if (!Update.begin(totalSize, U_FLASH)) {
+        Serial.printf("[FUOTA] Update.begin failed: %s\n", Update.errorString());
+        Serial.println("[FUOTA] Hint: use a partition scheme with app0/app1 OTA slots (see partitions.csv)");
+        resetFuotaRxState();
+        break;
+      }
+
+      if (!md5.isEmpty()) {
+        Update.setMD5(md5.c_str());
+      }
+
+      gFuotaRx.active = true;
+      gFuotaRx.readyToCommit = false;
+      gFuotaRx.sessionId = sessionId;
+      gFuotaRx.expectedSize = totalSize;
+      gFuotaRx.receivedSize = 0;
+      gFuotaRx.expectedChunkIndex = 0;
+      gFuotaRx.chunkSize = chunkSize;
+      gFuotaRx.totalChunks = totalChunks;
+      gFuotaRx.version = version;
+      gFuotaRx.md5 = md5;
+
+      Serial.printf("[FUOTA] BEGIN sid=%lu size=%lu chunkSize=%u totalChunks=%u version=%s\n",
+                    (unsigned long)sessionId,
+                    (unsigned long)totalSize,
+                    (unsigned)chunkSize,
+                    (unsigned)totalChunks,
+                    version.c_str());
+      break;
+    }
+
+    case MSG_TYPE_FUOTA_CHUNK: {
+      if (!gFuotaRx.active) {
+        Serial.println("[FUOTA] CHUNK received with no active session");
+        break;
+      }
+
+      if (cipherLen < 10) {
+        Serial.println("[FUOTA] CHUNK payload too short");
+        break;
+      }
+
+      const uint32_t sessionId = readU32BE((const uint8_t*)&plain[0]);
+      const uint32_t chunkIndex = readU32BE((const uint8_t*)&plain[4]);
+      const uint16_t chunkLen = readU16BE((const uint8_t*)&plain[8]);
+
+      if (sessionId != gFuotaRx.sessionId) {
+        Serial.printf("[FUOTA] CHUNK session mismatch rx=%lu expected=%lu\n",
+                      (unsigned long)sessionId,
+                      (unsigned long)gFuotaRx.sessionId);
+        break;
+      }
+
+      if (chunkIndex != gFuotaRx.expectedChunkIndex) {
+        Serial.printf("[FUOTA] CHUNK index mismatch rx=%lu expected=%lu\n",
+                      (unsigned long)chunkIndex,
+                      (unsigned long)gFuotaRx.expectedChunkIndex);
+        break;
+      }
+
+      if ((size_t)(10 + chunkLen) != cipherLen) {
+        Serial.printf("[FUOTA] CHUNK length mismatch header=%u cipher=%u\n",
+                      (unsigned)chunkLen,
+                      (unsigned)cipherLen);
+        break;
+      }
+
+      uint8_t* chunkData = reinterpret_cast<uint8_t*>(&plain[10]);
+      const size_t written = Update.write(chunkData, chunkLen);
+      if (written != chunkLen) {
+        Serial.printf("[FUOTA] Update.write failed at chunk=%lu: %s\n",
+                      (unsigned long)chunkIndex,
+                      Update.errorString());
+        Update.abort();
+        resetFuotaRxState();
+        break;
+      }
+
+      gFuotaRx.receivedSize += written;
+      ++gFuotaRx.expectedChunkIndex;
+      Serial.printf("[FUOTA] CHUNK sid=%lu idx=%lu len=%u total=%lu/%lu\n",
+                    (unsigned long)sessionId,
+                    (unsigned long)chunkIndex,
+                    (unsigned)chunkLen,
+                    (unsigned long)gFuotaRx.receivedSize,
+                    (unsigned long)gFuotaRx.expectedSize);
+      break;
+    }
+
+    case MSG_TYPE_FUOTA_END: {
+      if (!gFuotaRx.active) {
+        Serial.println("[FUOTA] END received with no active session");
+        break;
+      }
+
+      if (cipherLen < 10) {
+        Serial.println("[FUOTA] END payload too short");
+        break;
+      }
+
+      const uint32_t sessionId = readU32BE((const uint8_t*)&plain[0]);
+      const uint32_t totalSize = readU32BE((const uint8_t*)&plain[4]);
+      const uint16_t totalChunks = readU16BE((const uint8_t*)&plain[8]);
+
+      if (sessionId != gFuotaRx.sessionId ||
+          totalSize != gFuotaRx.expectedSize ||
+          totalChunks != gFuotaRx.totalChunks) {
+        Serial.println("[FUOTA] END metadata mismatch");
+        Update.abort();
+        resetFuotaRxState();
+        break;
+      }
+
+      if (gFuotaRx.receivedSize != gFuotaRx.expectedSize ||
+          gFuotaRx.expectedChunkIndex != gFuotaRx.totalChunks) {
+        Serial.printf("[FUOTA] END incomplete transfer received=%lu expected=%lu chunks=%lu/%u\n",
+                      (unsigned long)gFuotaRx.receivedSize,
+                      (unsigned long)gFuotaRx.expectedSize,
+                      (unsigned long)gFuotaRx.expectedChunkIndex,
+                      (unsigned)gFuotaRx.totalChunks);
+        Update.abort();
+        resetFuotaRxState();
+        break;
+      }
+
+      gFuotaRx.readyToCommit = true;
+      Serial.printf("[FUOTA] END validated sid=%lu — waiting for COMMIT\n", (unsigned long)sessionId);
+      break;
+    }
+
+    case MSG_TYPE_FUOTA_COMMIT: {
+      if (!gFuotaRx.active || !gFuotaRx.readyToCommit) {
+        Serial.println("[FUOTA] COMMIT received without ready session");
+        break;
+      }
+
+      if (cipherLen < 4) {
+        Serial.println("[FUOTA] COMMIT payload too short");
+        break;
+      }
+
+      const uint32_t sessionId = readU32BE((const uint8_t*)&plain[0]);
+      if (sessionId != gFuotaRx.sessionId) {
+        Serial.println("[FUOTA] COMMIT session mismatch");
+        break;
+      }
+
+      Serial.printf("[FUOTA] COMMIT sid=%lu version=%s\n",
+                    (unsigned long)sessionId,
+                    gFuotaRx.version.c_str());
+
+      if (!Update.end(true)) {
+        Serial.printf("[FUOTA] Update.end(true) failed: %s\n", Update.errorString());
+        resetFuotaRxState();
+        break;
+      }
+
+      if (!Update.isFinished()) {
+        Serial.println("[FUOTA] Update not finished after commit");
+        resetFuotaRxState();
+        break;
+      }
+
+      Serial.println("[FUOTA] Firmware committed successfully. Rebooting...");
+      delay(300);
+      ESP.restart();
+      break;
+    }
+
     default:
       Serial.printf("[CTRL] unhandled command type 0x%02X\n", msgType);
       break;
@@ -746,8 +1014,9 @@ bool sendMeasureResp(const String &sensorJson) {
   bool ok = secureSend(MSG_TYPE_DATA, gTxSeq,
                        (const uint8_t *)sensorJson.c_str(),
                        (uint16_t)sensorJson.length(),
-                       3000);
+                       8000);
   if (ok) gTxSeq++;
+  processDeferredCommandIfAny();
 
   xSemaphoreGive(gLoRaMutex);
   return ok;

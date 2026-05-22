@@ -1,4 +1,5 @@
 #include "sd_logger.h"
+#include <Update.h>
 
 // =====================================================
 // SPI bus for SD (separate from LoRa)
@@ -24,13 +25,30 @@ constexpr uint32_t kSdBetweenAttemptsMs     = 40;
 constexpr uint32_t kSdRetryPassDelayMs      = 500;
 constexpr uint32_t kSdFinalRetryPassDelayMs = 1200;
 constexpr uint32_t kSdBusResetDelayMs       = 15;
-constexpr uint32_t kSdEnsureRetryIntervalMs = 1500;
+constexpr uint32_t kSdEnsureRetryIntervalMs = 4000;
 constexpr uint32_t kSdWarmupClockHz         = 400000;
 constexpr uint8_t  kSdWarmupBytes           = 10;   // 10 * 8 = 80 clocks, >= 74
 
 // Power-cycle timing
-constexpr uint32_t kSdPowerOffMs            = 150;  // hold power off long enough for card caps to drain
-constexpr uint32_t kSdPowerOnSettleMs       = 300;  // let card's internal regulator stabilise after power-on
+constexpr uint32_t kSdPowerOffMs            = 700;  // hold power off long enough for card/module caps to fully drain
+constexpr uint32_t kSdPowerOnSettleMs       = 900;  // let card regulator + level shifter stabilise after power-on
+constexpr uint32_t kSdLineDischargeMs       = 80;   // keep SPI lines quiet/low to avoid phantom powering the card
+
+void floatSdBusPins() {
+  pinMode(SD_CS, INPUT_PULLUP);
+  pinMode(SD_SCK, INPUT);
+  pinMode(SD_MOSI, INPUT);
+  pinMode(SD_MISO, INPUT);
+}
+
+void driveSdBusIdleLow() {
+  pinMode(SD_CS, OUTPUT);
+  pinMode(SD_SCK, OUTPUT);
+  pinMode(SD_MOSI, OUTPUT);
+  digitalWrite(SD_CS, LOW);
+  digitalWrite(SD_SCK, LOW);
+  digitalWrite(SD_MOSI, LOW);
+}
 
 // Turn SD module power ON via GPIO → BC547 → BS250
 void sdPowerOn() {
@@ -48,7 +66,12 @@ void sdPowerOff() {
   pinMode(SD_POWER_PIN, OUTPUT);
   digitalWrite(SD_POWER_PIN, LOW);
   gSdPowerOn = false;
-  Serial.printf("[SD] Power OFF (GPIO %d LOW)\n", SD_POWER_PIN);
+  driveSdBusIdleLow();
+  Serial.printf("[SD] Power OFF (GPIO %d LOW) — discharging SPI lines for %lu ms\n",
+                SD_POWER_PIN,
+                (unsigned long)kSdLineDischargeMs);
+  delay(kSdLineDischargeMs);
+  floatSdBusPins();
 }
 
 // Full power cycle: OFF → wait → ON → wait
@@ -245,4 +268,79 @@ void sendFirmwareOTA(const char* path) {
   
   updateFile.close();
   Serial.println("[FUOTA] Transfer complete.");
+}
+
+bool applyFirmwareFromSd(const char* path, const char* expectedMd5, String* errorOut) {
+  if (errorOut) *errorOut = "";
+
+  if (!ensureSdReady()) {
+    if (errorOut) *errorOut = "SD not ready";
+    return false;
+  }
+
+  File updateFile = SD.open(path, FILE_READ);
+  if (!updateFile) {
+    if (errorOut) *errorOut = "Cannot open firmware file";
+    return false;
+  }
+
+  const size_t totalSize = updateFile.size();
+  if (totalSize == 0) {
+    updateFile.close();
+    if (errorOut) *errorOut = "Firmware file is empty";
+    return false;
+  }
+
+  Serial.printf("[OTA] Applying firmware from SD: %s (%u bytes)\n", path, (unsigned)totalSize);
+
+  if (!Update.begin(totalSize, U_FLASH)) {
+    updateFile.close();
+    if (errorOut) *errorOut = Update.errorString();
+    return false;
+  }
+
+  if (expectedMd5 && strlen(expectedMd5) > 0) {
+    Update.setMD5(expectedMd5);
+  }
+
+  uint8_t buffer[512];
+  size_t totalWritten = 0;
+  while (updateFile.available()) {
+    const size_t len = updateFile.read(buffer, sizeof(buffer));
+    if (len == 0) {
+      continue;
+    }
+
+    const size_t written = Update.write(buffer, len);
+    if (written != len) {
+      updateFile.close();
+      Update.abort();
+      if (errorOut) *errorOut = Update.errorString();
+      return false;
+    }
+    totalWritten += written;
+  }
+
+  updateFile.close();
+
+  if (totalWritten != totalSize) {
+    Update.abort();
+    if (errorOut) *errorOut = "Written size mismatch";
+    return false;
+  }
+
+  if (!Update.end()) {
+    if (errorOut) *errorOut = Update.errorString();
+    return false;
+  }
+
+  if (!Update.isFinished()) {
+    if (errorOut) *errorOut = "Update not finished";
+    return false;
+  }
+
+  Serial.println("[OTA] Firmware applied successfully. Rebooting...");
+  delay(300);
+  ESP.restart();
+  return true;
 }

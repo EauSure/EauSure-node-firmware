@@ -5,11 +5,13 @@
 #include <ArduinoJson.h>
 
 #include "config.h"
+#include "api_client.h"
 #include "wifi_manager.h"
 #include "node_pairing_mode.h"
 #include "tls_utils.h"
 #include "lora_radio.h"
 #include "otaa_manager.h"
+#include "fuota_manager.h"
 
 namespace {
 
@@ -24,6 +26,24 @@ uint32_t gLastConnectAttemptMs = 0;
 bool gSubscribed = false;
 bool gExclusiveTlsWindow = false;
 bool gTlsReady = false;
+
+constexpr size_t kPendingCommandCapacity = 4;
+constexpr uint8_t kAckRetryMax = 4;
+constexpr uint32_t kAckRetryBaseMs = 5000;
+constexpr uint32_t kAckRetryMaxMs = 60000;
+
+struct PendingCommand {
+  bool used = false;
+  bool processed = false;
+  bool acked = false;
+  uint8_t ackAttempts = 0;
+  uint32_t nextAckAttemptMs = 0;
+  String topic;
+  String body;
+  String cmdId;
+};
+
+PendingCommand gPendingCommands[kPendingCommandCapacity];
 
 String getGatewayHardwareIdString() {
   String configured = String(GATEWAY_DEVICE_ID);
@@ -135,6 +155,214 @@ void handleUnpairNode(JsonDocument& doc) {
   erasePairingAndEnterPairingMode();
 }
 
+bool enqueuePendingCommand(const String& topicStr, const String& body, const String& cmdId) {
+  for (PendingCommand& slot : gPendingCommands) {
+    if (slot.used && !cmdId.isEmpty() && slot.cmdId == cmdId) {
+      Serial.printf("[MQTT] Duplicate pending command ignored cmdId=%s\n", cmdId.c_str());
+      return true;
+    }
+  }
+
+  for (PendingCommand& slot : gPendingCommands) {
+    if (!slot.used) {
+      slot.used = true;
+      slot.processed = false;
+      slot.acked = cmdId.isEmpty();
+      slot.ackAttempts = 0;
+      slot.nextAckAttemptMs = millis();
+      slot.topic = topicStr;
+      slot.body = body;
+      slot.cmdId = cmdId;
+      return true;
+    }
+  }
+
+  Serial.println("[MQTT] Pending command queue full - dropping command");
+  return false;
+}
+
+bool executePendingCommand(JsonDocument& doc) {
+  String cmd = String(doc["cmd"] | "");
+  cmd.toUpperCase();
+
+  if (cmd == "CONFIRM_PAIRING") {
+    handleConfirmPairing(doc);
+    return true;
+  }
+
+  if (cmd == "PAIRING_KEY_READY") {
+    handlePairingKeyReady(doc);
+    return true;
+  }
+
+  if (cmd == "SCAN_NODES") {
+    Serial.println("[MQTT] SCAN_NODES command received");
+    NodePairingMode::startScanning();
+    return true;
+  }
+
+  if (cmd == "CANCEL_PAIRING") {
+    Serial.println("[MQTT] CANCEL_PAIRING command received");
+    NodePairingMode::cancelPairing();
+    return true;
+  }
+
+  if (cmd == "SET_CONFIG") {
+    Serial.println("[MQTT] SET_CONFIG command received");
+    handleSetConfig(doc);
+    return true;
+  }
+
+  if (cmd == "MEASURE_NOW") {
+    Serial.println("[MQTT] MEASURE_NOW command received");
+    requestMeasureNow();
+    return true;
+  }
+
+  if (cmd == "ACTIVATE_NODE") {
+    Serial.println("[MQTT] ACTIVATE_NODE command received");
+    sendActivate();
+    return true;
+  }
+
+  if (cmd == "DEACTIVATE_NODE") {
+    Serial.println("[MQTT] DEACTIVATE_NODE command received");
+    setNodeActiveFlag(false);
+    return true;
+  }
+
+  if (cmd == "HEALTH_CHECK") {
+    Serial.println("[MQTT] HEALTH_CHECK command received");
+    requestMeasureNow();
+    return true;
+  }
+
+  if (cmd == "UNPAIR_NODE") {
+    handleUnpairNode(doc);
+    return true;
+  }
+
+  if (cmd == "UPDATE_FIRMWARE") {
+    String target = String(doc["target"] | "");
+    String url = String(doc["url"] | "");
+    String version = String(doc["version"] | "");
+    String md5 = String(doc["md5"] | "");
+    size_t size = (size_t)(doc["size"] | 0);
+    String nodeId = String(doc["nodeId"] | "");
+    String cmdId = String(doc["cmdId"] | "");
+
+    if (target == "gateway") {
+      Serial.printf("[MQTT] UPDATE_FIRMWARE gateway version=%s size=%u cmdId=%s\n",
+                    version.c_str(), (unsigned)size, cmdId.c_str());
+      FuotaManager::queueGatewayUpdate(url, version, md5, size, cmdId);
+      return true;
+    }
+
+    if (target == "node") {
+      Serial.printf("[MQTT] UPDATE_FIRMWARE node=%s version=%s size=%u cmdId=%s\n",
+                    nodeId.c_str(), version.c_str(), (unsigned)size, cmdId.c_str());
+      FuotaManager::queueNodeUpdate(nodeId, url, version, md5, size, cmdId);
+      return true;
+    }
+
+    Serial.println("[MQTT] UPDATE_FIRMWARE missing or invalid target");
+    return true;
+  }
+
+  Serial.printf("[MQTT] Ignoring unsupported cmd=%s\n", cmd.c_str());
+  return true;
+}
+
+void processPendingCommands() {
+  for (PendingCommand& slot : gPendingCommands) {
+    if (!slot.used) {
+      continue;
+    }
+
+    StaticJsonDocument<1024> doc;
+    if (deserializeJson(doc, slot.body) != DeserializationError::Ok) {
+      Serial.println("[MQTT] Invalid JSON payload in pending queue");
+      slot = PendingCommand{};
+      continue;
+    }
+
+    if (!slot.processed) {
+      executePendingCommand(doc);
+      slot.processed = true;
+    }
+
+    if (slot.acked) {
+      slot = PendingCommand{};
+      continue;
+    }
+
+    if (gExclusiveTlsWindow) {
+      return;
+    }
+
+    const uint32_t now = millis();
+    if ((int32_t)(now - slot.nextAckAttemptMs) < 0) {
+      continue;
+    }
+
+    const String boundFuotaCmdId = FuotaManager::getBoundCommandId();
+    if (!slot.cmdId.isEmpty() && boundFuotaCmdId == slot.cmdId) {
+      String failReason;
+      if (FuotaManager::commandShouldFail(failReason)) {
+        ApiBasicResult failResult;
+        MqttGateway::setExclusiveTlsWindow(true);
+        const bool failOk = ApiClient::failCommand(API_BASE_URL, slot.cmdId, failReason, failResult);
+        MqttGateway::setExclusiveTlsWindow(false);
+        Serial.printf("[MQTT][API] Failed FUOTA command %s result=%s reason=%s\n",
+                      slot.cmdId.c_str(),
+                      failOk ? "OK" : "FAIL",
+                      failReason.c_str());
+        FuotaManager::dismissFailedJob();
+        slot = PendingCommand{};
+        continue;
+      }
+
+      if (!FuotaManager::commandReadyToAck()) {
+        continue;
+      }
+    }
+
+    ApiBasicResult ackResult;
+    MqttGateway::setExclusiveTlsWindow(true);
+    const bool ackOk = ApiClient::ackCommand(API_BASE_URL, slot.cmdId, ackResult);
+    MqttGateway::setExclusiveTlsWindow(false);
+
+    if (ackOk) {
+      Serial.printf("[MQTT][API] Acked command %s\n", slot.cmdId.c_str());
+      if (!boundFuotaCmdId.isEmpty() && boundFuotaCmdId == slot.cmdId) {
+        FuotaManager::clearCommandBinding();
+      }
+      slot = PendingCommand{};
+      continue;
+    }
+
+    ++slot.ackAttempts;
+    Serial.printf("[MQTT][API] Failed to ack command %s (attempt=%u code=%d msg=%s)\n",
+                  slot.cmdId.c_str(),
+                  (unsigned)slot.ackAttempts,
+                  ackResult.httpCode,
+                  ackResult.message.c_str());
+
+    if (slot.ackAttempts >= kAckRetryMax) {
+      Serial.printf("[MQTT][API] Giving up ack retries for command %s\n", slot.cmdId.c_str());
+      slot = PendingCommand{};
+      continue;
+    }
+
+    uint32_t delayMs = kAckRetryBaseMs;
+    for (uint8_t i = 1; i < slot.ackAttempts; ++i) {
+      delayMs = min(delayMs * 2UL, kAckRetryMaxMs);
+    }
+    slot.nextAckAttemptMs = millis() + delayMs;
+    return;
+  }
+}
+
 void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr = String(topic);
 
@@ -152,52 +380,18 @@ void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
 
   Serial.printf("[MQTT] RX topic=%s payload=%s\n", topicStr.c_str(), body.c_str());
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   if (deserializeJson(doc, body) != DeserializationError::Ok) {
     Serial.println("[MQTT] Invalid JSON payload");
     return;
   }
 
-  // Clear retained message from broker so we don't reprocess on reconnect
+  String cmdId = String(doc["cmdId"] | "");
+
+  // Clear retained message from broker so we don't reprocess on reconnect.
+  // After that, the command is owned by the local pending queue.
   gMqttClient.publish(topicStr.c_str(), (const uint8_t*)"", 0, true);
-
-  String cmd = String(doc["cmd"] | "");
-  cmd.toUpperCase();
-
-  if (cmd == "CONFIRM_PAIRING") {
-    handleConfirmPairing(doc);
-    return;
-  }
-
-  if (cmd == "PAIRING_KEY_READY") {
-    handlePairingKeyReady(doc);
-    return;
-  }
-
-  if (cmd == "SCAN_NODES") {
-    Serial.println("[MQTT] SCAN_NODES command received");
-    NodePairingMode::startScanning();
-    return;
-  }
-
-  if (cmd == "CANCEL_PAIRING") {
-    Serial.println("[MQTT] CANCEL_PAIRING command received");
-    NodePairingMode::cancelPairing();
-    return;
-  }
-
-  if (cmd == "SET_CONFIG") {
-    Serial.println("[MQTT] SET_CONFIG command received");
-    handleSetConfig(doc);
-    return;
-  }
-
-  if (cmd == "UNPAIR_NODE") {
-    handleUnpairNode(doc);
-    return;
-  }
-
-  Serial.printf("[MQTT] Ignoring unsupported cmd=%s\n", cmd.c_str());
+  enqueuePendingCommand(topicStr, body, cmdId);
 }
 
 bool connectBroker() {
@@ -299,6 +493,7 @@ void loop() {
 
   ensureSubscribed();
   gMqttClient.loop();
+  processPendingCommands();
 }
 
 bool isConnected() {

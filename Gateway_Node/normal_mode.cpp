@@ -154,6 +154,13 @@ void loop() {
 
   otaaTick();
 
+  // While secureCommand() is waiting for a command ACK, only lora_radio::waitForAck
+  // may read the radio — otherwise we steal the ACK and FUOTA/commands fail.
+  if (isGatewayCommandInFlight()) {
+    telemetryTick();
+    return;
+  }
+
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     uint8_t frame[MAX_FRAME_LEN];

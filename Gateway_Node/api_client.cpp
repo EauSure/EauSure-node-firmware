@@ -619,4 +619,52 @@ bool ackCommand(
   return out.success;
 }
 
+bool failCommand(
+  const String& apiBaseUrl,
+  const String& commandId,
+  const String& reason,
+  ApiBasicResult& out
+) {
+  out = ApiBasicResult{};
+
+  if (apiBaseUrl.isEmpty()) {
+    out.message = "API base URL is empty";
+    return false;
+  }
+  if (commandId.isEmpty()) {
+    out.message = "Command ID is empty";
+    return false;
+  }
+
+  String url = apiBaseUrl + "/api/registry/command/fail";
+
+  StaticJsonDocument<192> req;
+  req["cmdId"] = commandId;
+  req["reason"] = reason;
+
+  String body;
+  serializeJson(req, body);
+
+  Serial.println("\n[API] POST " + url + " (fail)");
+
+  String response;
+  int code = httpsPost(url, body, response, true);
+  out.httpCode = code;
+
+  if (code <= 0) {
+    out.message = "HTTP POST failed (code=" + String(code) + ")";
+    return false;
+  }
+
+  StaticJsonDocument<256> resp;
+  if (deserializeJson(resp, response)) {
+    out.message = "Invalid JSON response";
+    return false;
+  }
+
+  out.success = resp["success"] | false;
+  out.message = String(resp["message"] | "");
+  return out.success;
+}
+
 } // namespace ApiClient

@@ -33,3 +33,4 @@ void markSdNotReady();
 // OTA Functions (optional, for future use)
 // =====================================================
 void sendFirmwareOTA(const char* path);
+bool applyFirmwareFromSd(const char* path, const char* expectedMd5, String* errorOut = nullptr);

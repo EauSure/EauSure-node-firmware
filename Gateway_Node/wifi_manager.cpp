@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 #include "mqtt_gateway.h"
+#include "sd_logger.h"
 #include "tls_utils.h"
 #include "wifi_store.h"
 
@@ -9,6 +10,14 @@ namespace WiFiManager {
         String gSsid = "";
         String gPassword = "";
         uint32_t gFirstFailureMs = 0;
+
+        const char* selectDownloadCaPem(const String& host) {
+            (void)host;
+            if (TlsUtils::isPemConfigured(DOWNLOAD_TLS_ROOT_CA)) {
+                return DOWNLOAD_TLS_ROOT_CA;
+            }
+            return API_TLS_ROOT_CA;
+        }
 
         String extractHostFromUrl(const String& url) {
             int start = 0;
@@ -139,7 +148,7 @@ namespace WiFiManager {
         return ok;
     }
 
-    bool submitSensorData(
+    SubmitResult submitSensorData(
         const char* nodeId,
         const char* gatewayHardwareId,
         uint32_t seq,
@@ -157,18 +166,21 @@ namespace WiFiManager {
         float esp32Temp,
         const char* errorMsg,
         int8_t rssi,
-        float snr
+        float snr,
+        int* httpStatusOut,
+        const char* firmwareVersion
     ) {
+        if (httpStatusOut) *httpStatusOut = 0;
         if (!nodeId || strlen(nodeId) == 0 || !gatewayHardwareId || strlen(gatewayHardwareId) == 0) {
             Serial.println("[WiFi] Missing nodeId or gatewayHardwareId");
-            return false;
+            return SubmitResult::RetryableError;
         }
 
         if (!isConnected()) {
             Serial.println("[WiFi] Not connected, attempting reconnect...");
             if (!reconnect()) {
                 Serial.println("[WiFi] Reconnect failed - data not sent");
-                return false;
+                return SubmitResult::RetryableError;
             }
         }
 
@@ -189,7 +201,7 @@ namespace WiFiManager {
         WiFiClientSecure client;
         if (!TlsUtils::configureClient(client, API_TLS_ROOT_CA, "telemetry HTTPS POST")) {
             MqttGateway::setExclusiveTlsWindow(false);
-            return false;
+            return SubmitResult::RetryableError;
         }
 
         HTTPClient http;
@@ -202,7 +214,7 @@ namespace WiFiManager {
         if (!http.begin(client, url)) {
             Serial.println("[WiFi] Failed to begin HTTP connection");
             MqttGateway::setExclusiveTlsWindow(false);
-            return false;
+            return SubmitResult::RetryableError;
         }
 
         http.addHeader("Content-Type", "application/json");
@@ -229,6 +241,11 @@ namespace WiFiManager {
         payload += ",\"e\":\"" + String(errorMsg ? errorMsg : "None") + "\"";
         payload += ",\"rssi\":" + String(rssi);
         payload += ",\"snr\":" + String(snr, 1);
+        if (firmwareVersion && firmwareVersion[0] != '\0') {
+            payload += ",\"fw\":\"";
+            payload += firmwareVersion;
+            payload += "\"";
+        }
         payload += "}";
 
         Serial.println("[WiFi] Sending to API:");
@@ -236,9 +253,10 @@ namespace WiFiManager {
 
         int httpCode = http.POST(payload);
 
-        bool success = false;
+        SubmitResult result = SubmitResult::RetryableError;
 
         if (httpCode > 0) {
+            if (httpStatusOut) *httpStatusOut = httpCode;
             Serial.print("[WiFi] HTTP Response Code: ");
             Serial.println(httpCode);
 
@@ -248,13 +266,16 @@ namespace WiFiManager {
                 Serial.println("[WiFi] Data submitted successfully");
                 Serial.print("[WiFi] Server Response: ");
                 Serial.println(response);
-                success = true;
+                result = SubmitResult::Success;
             } else {
                 Serial.print("[WiFi] Server Error (");
                 Serial.print(httpCode);
                 Serial.println(")");
                 Serial.print("[WiFi] Response: ");
                 Serial.println(response);
+                if (httpCode == 429) {
+                    result = SubmitResult::RateLimited;
+                }
             }
         } else {
             Serial.print("[WiFi] HTTP Error: ");
@@ -264,7 +285,7 @@ namespace WiFiManager {
         http.end();
         MqttGateway::setExclusiveTlsWindow(false);
         Serial.println("[WiFi][DIAG] ===== Sensor Submit end =====");
-        return success;
+        return result;
     }
 
     bool unprovisionGateway() {
@@ -318,6 +339,144 @@ namespace WiFiManager {
         http.end();
         MqttGateway::setExclusiveTlsWindow(false);
         return success;
+    }
+
+    bool downloadFileToSd(
+        const String& url,
+        const char* sdPath,
+        size_t expectedSize,
+        String* errorOut
+    ) {
+        if (errorOut) *errorOut = "";
+
+        if (!sdPath || strlen(sdPath) == 0) {
+            if (errorOut) *errorOut = "Empty SD path";
+            return false;
+        }
+
+        if (!isConnected() && !reconnect()) {
+            if (errorOut) *errorOut = "WiFi unavailable";
+            return false;
+        }
+
+        if (!ensureSdReady()) {
+            if (errorOut) *errorOut = "SD not ready";
+            return false;
+        }
+
+        String host = extractHostFromUrl(url);
+        Serial.println();
+        Serial.println("[WiFi][DIAG] ===== File Download begin =====");
+        Serial.println("[WiFi][DIAG] URL: " + url);
+        Serial.println("[WiFi][DIAG] Host: " + host);
+        printHeapStats();
+        printDnsLookup(host);
+
+        const char* downloadCaPem = selectDownloadCaPem(host);
+        const char* downloadTlsLabel = TlsUtils::isPemConfigured(DOWNLOAD_TLS_ROOT_CA)
+            ? "download raw TLS"
+            : "download raw TLS (API CA fallback)";
+
+        MqttGateway::setExclusiveTlsWindow(true);
+        rawTcpConnectTest(host, 443);
+        {
+            WiFiClientSecure rawTlsClient;
+            if (TlsUtils::configureClient(rawTlsClient, downloadCaPem, downloadTlsLabel)) {
+                Serial.printf("[WiFi][DIAG] raw TLS connect -> %s:%u\n", host.c_str(), 443);
+                bool ok = rawTlsClient.connect(host.c_str(), 443);
+                Serial.printf("[WiFi][DIAG] raw TLS connect: %s\n", ok ? "OK" : "FAIL");
+                if (ok) rawTlsClient.stop();
+            } else {
+                Serial.println("[WiFi][DIAG] raw TLS connect: skipped (CA not configured)");
+            }
+        }
+
+        WiFiClientSecure client;
+        if (!TlsUtils::configureClient(client, downloadCaPem, "download HTTPS GET")) {
+            MqttGateway::setExclusiveTlsWindow(false);
+            if (errorOut) *errorOut = "TLS setup failed";
+            return false;
+        }
+
+        HTTPClient http;
+        http.setReuse(false);
+        http.useHTTP10(true);
+        http.setTimeout(15000);
+        http.setConnectTimeout(15000);
+
+        if (!http.begin(client, url)) {
+            MqttGateway::setExclusiveTlsWindow(false);
+            if (errorOut) *errorOut = "HTTP begin failed";
+            return false;
+        }
+
+        const int code = http.GET();
+        if (code != HTTP_CODE_OK) {
+            String response = http.getString();
+            http.end();
+            MqttGateway::setExclusiveTlsWindow(false);
+            if (errorOut) *errorOut = "HTTP GET failed: " + String(code) + " " + response;
+            return false;
+        }
+
+        if (SD.exists(sdPath)) {
+            SD.remove(sdPath);
+        }
+
+        File out = SD.open(sdPath, FILE_WRITE);
+        if (!out) {
+            http.end();
+            MqttGateway::setExclusiveTlsWindow(false);
+            if (errorOut) *errorOut = "Cannot open SD output file";
+            return false;
+        }
+
+        WiFiClient* stream = http.getStreamPtr();
+        uint8_t buffer[512];
+        size_t totalWritten = 0;
+
+        while (http.connected() && (stream->available() || stream->connected())) {
+            const size_t available = stream->available();
+            if (available == 0) {
+                delay(10);
+                continue;
+            }
+
+            const size_t toRead = available > sizeof(buffer) ? sizeof(buffer) : available;
+            const int readLen = stream->readBytes(buffer, toRead);
+            if (readLen <= 0) {
+                continue;
+            }
+
+            const size_t written = out.write(buffer, (size_t)readLen);
+            if (written != (size_t)readLen) {
+                out.close();
+                http.end();
+                MqttGateway::setExclusiveTlsWindow(false);
+                if (errorOut) *errorOut = "SD write failed during download";
+                return false;
+            }
+
+            totalWritten += written;
+        }
+
+        out.close();
+        http.end();
+        MqttGateway::setExclusiveTlsWindow(false);
+
+        if (expectedSize > 0 && totalWritten != expectedSize) {
+            if (errorOut) {
+                *errorOut = "Size mismatch. expected=" + String((unsigned)expectedSize) +
+                            " actual=" + String((unsigned)totalWritten);
+            }
+            return false;
+        }
+
+        Serial.printf("[WiFi] Downloaded %u bytes to %s\n",
+                      (unsigned)totalWritten,
+                      sdPath);
+        Serial.println("[WiFi][DIAG] ===== File Download end =====");
+        return true;
     }
 
     const char* getStatusString() {

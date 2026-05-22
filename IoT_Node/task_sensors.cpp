@@ -1,6 +1,7 @@
 #include "task_sensors.h"
 #include "app_state.h"
 #include "lora_radio.h"
+#include "firmware_version.h"
 
 // =====================================================
 // buildSensorJson — serialise gSensorData into the
@@ -28,6 +29,7 @@ static String buildSensorJson() {
   doc["te"] = round(gSensorData.espTempC   * 10.0f) / 10.0f;
 
   doc["e"]  = gEventState.lastEvent;
+  doc["fw"] = getNodeFirmwareVersion();
 
   String out;
   serializeJson(doc, out);

@@ -1,5 +1,6 @@
 .vscode
 **/config.h
+IoT_Node/build_opt.h
 /API
 /test_API_Firmware
 /Sysml

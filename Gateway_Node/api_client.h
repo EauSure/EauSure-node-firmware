@@ -108,4 +108,11 @@ bool ackCommand(
   ApiBasicResult& out
 );
 
+bool failCommand(
+  const String& apiBaseUrl,
+  const String& commandId,
+  const String& reason,
+  ApiBasicResult& out
+);
+
 } // namespace ApiClient

@@ -20,6 +20,13 @@ void requestMeasureNow();
 void notifyMeasureRequestDispatched();
 void notifyMeasureResponseHandled();
 
+// Wake window: from MEASURE_REQ until SLEEP (or timeout). Blocks scheduler + MQTT pause.
+bool isMeasureWakeWindowActive();
+void onMeasureWakeWindowClosed();
+
+// Sleep until the next scheduled MEASURE or HEARTBEAT (whichever is sooner), minus wake margin.
+uint32_t computeSleepDurationSec();
+
 // Config update from SET_CONFIG MQTT command
 void setMeasureIntervalMs(uint32_t ms);
 uint32_t getMeasureIntervalMs();

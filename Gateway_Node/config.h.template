@@ -100,6 +100,13 @@ static const char API_TLS_ROOT_CA[] PROGMEM = R"PEM(
 
 )PEM";
 
+// Optional: paste the PEM-encoded root/intermediate CA that signs your
+// firmware download host (for example Vercel Blob / S3 / R2). If left empty,
+// the gateway falls back to API_TLS_ROOT_CA for downloads.
+static const char DOWNLOAD_TLS_ROOT_CA[] PROGMEM = R"PEM(
+
+)PEM";
+
 // ============================================================
 // MQTT CONFIGURATION
 // ============================================================

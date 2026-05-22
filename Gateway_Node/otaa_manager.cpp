@@ -2,6 +2,7 @@
 #include "lora_radio.h"
 #include "app_state.h"
 #include "node_pairing_store.h"
+#include "fuota_manager.h"
 #include <ArduinoJson.h>
 
 // =====================================================
@@ -26,6 +27,7 @@ namespace {
   bool     gActivatePending = true;   // true until first ACTIVATE_OK received
   bool     gHeartbeatPending = false; // true after HEARTBEAT_REQ until HEARTBEAT_ACK or timeout
   bool     gMeasurePending  = false;  // true after MEASURE_REQ until MEASURE_RESP or timeout
+  bool     gWakeWindowActive = false; // true from MEASURE_REQ until SLEEP sent or window aborted
 
   // Gateway-side configuration (populated from SET_CONFIG or backend fetch)
   bool     gNodeActiveConfig   = true;   // true = gateway sends MEASURE_REQ; false = node in standby
@@ -38,7 +40,10 @@ namespace {
   // Heartbeat interval — auto-aligned to MEASURE_INTERVAL_MS / 2 (min 15s, max 30min)
   static uint32_t HEARTBEAT_INTERVAL_MS = 30000;
   static const uint32_t HEARTBEAT_RESPONSE_TIMEOUT_MS = 8000;
-  static const uint32_t MEASURE_RESPONSE_TIMEOUT_MS = 12000;
+  // Worst case: node measure + LoRa window (config/FUOTA) + cloud deferral
+  static const uint32_t MEASURE_RESPONSE_TIMEOUT_MS = 45000;
+  // Node needs time to exit deep sleep and open RX before the next gateway command
+  static const uint32_t SLEEP_WAKE_MARGIN_MS = 25000;
 
   // Helper: compute heartbeat interval from measure interval
   static uint32_t computeHeartbeatIntervalMs(uint32_t measureMs) {
@@ -68,6 +73,7 @@ void initOtaaManager() {
   gHeartbeatPendingAt = 0;
   gMeasurePending  = false;
   gMeasurePendingAt = 0;
+  gWakeWindowActive = false;
 
   // Align heartbeat with current measure interval
   HEARTBEAT_INTERVAL_MS = computeHeartbeatIntervalMs(MEASURE_INTERVAL_MS);
@@ -111,12 +117,14 @@ void otaaTick() {
     return;   // don't send MEASURE_REQ or HEARTBEAT until paired
   }
 
-  if (gMeasurePending) {
-    if (now - gMeasurePendingAt >= MEASURE_RESPONSE_TIMEOUT_MS) {
+  if (gMeasurePending || gWakeWindowActive) {
+    if (gMeasurePending &&
+        now - gMeasurePendingAt >= MEASURE_RESPONSE_TIMEOUT_MS) {
       Serial.printf("[OTAA] MEASURE_RESP timeout after %lu ms — releasing scheduler\n",
                     (unsigned long)(now - gMeasurePendingAt));
       gMeasurePending = false;
       gMeasurePendingAt = 0;
+      gWakeWindowActive = false;
     } else {
       return;
     }
@@ -134,7 +142,9 @@ void otaaTick() {
   }
 
   // ── Phase 2: Periodic HEARTBEAT ──
-  if ((now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) &&
+  // Do not interleave HB with an open measure/FUOTA window or pending node FUOTA job.
+  if (!gWakeWindowActive && !gMeasurePending && !FuotaManager::hasPendingNodeUpdate() &&
+      (now - gLastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) &&
       (now - gLastCommandTxAt >= schedulerGapMs) &&
       (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
     gLastHeartbeatAt = now;
@@ -157,7 +167,8 @@ void otaaTick() {
       (gLastReplyRxAt == 0 || now - gLastReplyRxAt >= schedulerGapMs)) {
     gLastCommandTxAt = now;
     gLastMeasureAt = now;
-    Serial.println("[OTAA] Auto MEASURE_REQ (60 s interval)");
+    Serial.printf("[OTAA] Auto MEASURE_REQ (interval %lu ms)\n",
+                  (unsigned long)MEASURE_INTERVAL_MS);
     if (sendMeasureReq()) {
       notifyMeasureRequestDispatched();
     } else {
@@ -172,7 +183,19 @@ bool shouldPauseBackgroundWork() {
     return true;
   }
 
-  return gActivatePending || gHeartbeatPending || gMeasurePending;
+  return gActivatePending || gHeartbeatPending || gMeasurePending || gWakeWindowActive;
+}
+
+bool isMeasureWakeWindowActive() {
+  return gWakeWindowActive;
+}
+
+void onMeasureWakeWindowClosed() {
+  if (!gWakeWindowActive) {
+    return;
+  }
+  gWakeWindowActive = false;
+  Serial.println("[OTAA] Measure wake window closed");
 }
 
 // =====================================================
@@ -213,8 +236,53 @@ void requestMeasureNow() {
 void notifyMeasureRequestDispatched() {
   gMeasurePending = true;
   gMeasurePendingAt = millis();
-  Serial.printf("[OTAA] MEASURE_REQ in progress — scheduler paused at t=%lu ms\n",
+  gWakeWindowActive = true;
+  Serial.printf("[OTAA] MEASURE_REQ in progress — wake window open at t=%lu ms\n",
                 (unsigned long)gMeasurePendingAt);
+}
+
+uint32_t computeSleepDurationSec() {
+  const uint32_t now = millis();
+
+  uint32_t untilMeasureMs = 0;
+  if (gLastMeasureAt != 0) {
+    const uint32_t nextMeasureAt = gLastMeasureAt + MEASURE_INTERVAL_MS;
+    untilMeasureMs = (nextMeasureAt > now) ? (nextMeasureAt - now) : 0;
+  }
+
+  uint32_t untilHeartbeatMs = 0;
+  if (gLastHeartbeatAt != 0) {
+    const uint32_t nextHeartbeatAt = gLastHeartbeatAt + HEARTBEAT_INTERVAL_MS;
+    untilHeartbeatMs = (nextHeartbeatAt > now) ? (nextHeartbeatAt - now) : 0;
+  }
+
+  uint32_t untilNextMs = MEASURE_INTERVAL_MS;
+  if (untilMeasureMs > 0) {
+    untilNextMs = untilMeasureMs;
+  }
+  if (untilHeartbeatMs > 0 && untilHeartbeatMs < untilNextMs) {
+    untilNextMs = untilHeartbeatMs;
+  }
+
+  uint32_t sleepMs = (untilNextMs > SLEEP_WAKE_MARGIN_MS)
+                         ? (untilNextMs - SLEEP_WAKE_MARGIN_MS)
+                         : 30000UL;
+  if (sleepMs < 30000UL) {
+    sleepMs = 30000UL;
+  }
+
+  const uint32_t maxSleepMs = MEASURE_INTERVAL_MS;
+  if (sleepMs > maxSleepMs) {
+    sleepMs = maxSleepMs;
+  }
+
+  const uint32_t sleepSec = sleepMs / 1000UL;
+  Serial.printf("[OTAA] Sleep plan: next event in %lu ms -> sleep %lu s (mi=%lu hb=%lu)\n",
+                (unsigned long)untilNextMs,
+                (unsigned long)sleepSec,
+                (unsigned long)(MEASURE_INTERVAL_MS / 1000UL),
+                (unsigned long)(HEARTBEAT_INTERVAL_MS / 1000UL));
+  return sleepSec;
 }
 
 void setMeasureIntervalMs(uint32_t ms) {
@@ -276,7 +344,7 @@ void notifyMeasureResponseHandled() {
 
   gMeasurePending = false;
   gLastReplyRxAt = millis();
-  Serial.printf("[OTAA] MEASURE_RESP received after %lu ms — scheduler resumed\n",
+  Serial.printf("[OTAA] MEASURE_RESP handled after %lu ms — scheduler resumed\n",
                 (unsigned long)(millis() - gMeasurePendingAt));
   gMeasurePendingAt = 0;
 }
@@ -342,6 +410,18 @@ void handleHeartbeatAck(const char *json, int rssi, float snr) {
 
   Serial.printf("[OTAA] HEARTBEAT_ACK — batt=%d%% state=%s RSSI=%d SNR=%.1f\n",
                 batt, state.c_str(), rssi, snr);
+
+  // Standalone heartbeat cycle: send SLEEP unless a node FUOTA job needs another wake window soon.
+  if (!gMeasurePending && !gWakeWindowActive && gNodePaired && !gActivatePending &&
+      !FuotaManager::hasPendingNodeUpdate()) {
+    delay(150);
+    const uint32_t sleepSec = computeSleepDurationSec();
+    if (sendSleepReq(sleepSec)) {
+      Serial.printf("[OTAA] SLEEP after HEARTBEAT_ACK (%lu s)\n", (unsigned long)sleepSec);
+    }
+  } else if (FuotaManager::hasPendingNodeUpdate()) {
+    Serial.println("[OTAA] Skipping SLEEP after HEARTBEAT — node FUOTA job pending");
+  }
 
   // Si le nœud a redémarré sans que le Gateway le sache, relancer le handshake
   if (state == "inactive") {

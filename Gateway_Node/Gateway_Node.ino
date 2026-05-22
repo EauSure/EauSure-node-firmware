@@ -10,6 +10,7 @@
 #include "audio_alert.h"
 #include "sd_logger.h"
 #include "wifi_manager.h"
+#include "fuota_manager.h"
 #include <esp_bt.h>
 
 enum class BootMode {
@@ -29,6 +30,7 @@ void setup() {
   HardwareUI::begin();
   WifiStore::begin();
   NodePairingStore::begin();
+  FuotaManager::begin();
 
   // IMPORTANT: SD mount is deferred on purpose.
   //
@@ -119,6 +121,11 @@ void loop() {
         ESP.restart();
       }
 
+      FuotaManager::loop();
+      if (FuotaManager::isGatewayUpdateInProgress()) {
+        delay(10);
+        break;
+      }
       if (!shouldPauseBackgroundWork() && !telemetryHasPendingUpload()) {
         MqttGateway::loop();
       }

@@ -1,164 +1,218 @@
-# IoT Water Quality Monitoring over LoRa
+<div align="center">
 
-This repository contains the firmware for the two embedded components of the system:
+<img
+  src="eausure_header.svg"
+  alt="Logo officiel EauSûre"
+/>
 
-- `IoT_Node/`: ESP32-S3 sensor node
-- `Gateway_Node/`: ESP32 gateway
+<br/>
 
-The sensor node collects water-quality and device-health data, then sends it to the gateway over encrypted LoRa. The gateway handles provisioning, pairing, telemetry forwarding, and alerting.
+<img src="https://img.shields.io/badge/FreeRTOS-0095D5?style=for-the-badge&logoColor=white" alt="FreeRTOS" />
+<img src="https://img.shields.io/badge/ESP32-S3-1F2937?style=for-the-badge&logo=espressif&logoColor=white" alt="ESP32-S3" />
+<img src="https://img.shields.io/badge/ESP32_Gateway-111827?style=for-the-badge&logo=espressif&logoColor=white" alt="ESP32 Gateway" />
+<img src="https://img.shields.io/badge/LoRa-0F172A?style=for-the-badge&logoColor=white" alt="LoRa" />
+<img src="https://img.shields.io/badge/FUOTA-0EA5E9?style=for-the-badge&logoColor=white" alt="FUOTA" />
 
-## System Overview
+</div>
 
-### `IoT_Node/`
+# EauSûre Firmware
 
-The IoT node is responsible for:
+Firmware embarqué des deux composants physiques principaux de la solution EauSûre :
+- `IoT_Node/` : nœud de mesure ESP32-S3 ;
+- `Gateway_Node/` : passerelle ESP32.
 
-- reading pH, TDS, turbidity, water temperature, battery, and MPU data
-- detecting shake events
-- showing local status on the OLED display
-- replying to gateway commands over LoRa
-- supporting first-time pairing through a temporary WiFi access point
+Ce dépôt couvre la logique embarquée de mesure, de communication radio sécurisée, de provisioning, d'appairage, de supervision et de mise à jour firmware.
 
-Main files:
+## Portée
 
-| File | Role |
-|------|------|
-| `IoT_Node.ino` | Boot flow and mode selection |
-| `app_state.*` | Shared runtime state, sensor helpers, crypto helpers |
-| `pairing_mode.*` | WiFi AP pairing flow and HTTP endpoints |
-| `pairing_store.*` | Persistent pairing data storage |
-| `lora_radio.*` | Secure LoRa transport |
-| `task_sensors.*` | Sensor acquisition task |
-| `task_control.*` | Command listener task |
-| `task_mpu.*` | Shake detection task |
-| `task_display.*` | OLED/RGB update task |
-| `display_oled.*` | OLED rendering |
+Dans l'architecture EauSûre :
+- le **nœud de mesure** acquiert les données de qualité d'eau, détecte les événements critiques et dialogue avec la passerelle en LoRa chiffré ;
+- la **passerelle** assure la connectivité Wi-Fi, les échanges API/MQTT, le provisioning BLE, l'appairage des nœuds, la télémétrie cloud et l'orchestration des campagnes OTA/FUOTA.
 
-### `Gateway_Node/`
+Le firmware s'inscrit donc au cœur du système embarqué, entre le matériel terrain et la plateforme cloud.
 
-The gateway is responsible for:
+## Stack
 
-- BLE-based WiFi provisioning
-- discovering and pairing nearby nodes
-- sending `ACTIVATE`, `HEARTBEAT_REQ`, and `MEASURE_REQ` commands
-- receiving and validating encrypted LoRa payloads
-- forwarding telemetry to cloud services
-- handling MQTT-based pairing coordination
-- triggering SD/audio alerts when needed
+- Arduino / ESP32
+- FreeRTOS
+- LoRa point-à-point sécurisé
+- BLE pour le provisioning passerelle
+- Wi-Fi local pour l'appairage du nœud
+- MQTT pour les commandes et retours temps réel
+- HTTPS / API backend pour provisioning, heartbeat et télémétrie
+- FUOTA pour les mises à jour du nœud
 
-Main files:
+## Organisation du dépôt
 
-| File | Role |
-|------|------|
-| `Gateway_Node.ino` | Boot flow and mode selection |
-| `normal_mode.*` | Main gateway runtime |
-| `provisioning_mode.*` | BLE provisioning flow |
-| `ble_provisioning.*` | BLE transport for provisioning data |
-| `wifi_store.*` | Stored WiFi credentials and gateway token |
-| `node_pairing_mode.*` | Node discovery and pairing flow |
-| `node_pairing_store.*` | Stored node pairing data |
-| `mqtt_gateway.*` | MQTT connection and pairing messages |
-| `api_client.*` | Backend API calls |
-| `wifi_manager.*` | WiFi and HTTPS helpers |
-| `lora_radio.*` | Secure LoRa command and receive path |
-| `otaa_manager.*` | Gateway command scheduler |
-| `telemetry.*` | Payload parsing and upload queue |
-| `audio_alert.*` | Alert playback |
-| `sd_logger.*` | SD card access |
+- [IoT_Node](IoT_Node)
+  - firmware du nœud de mesure ESP32-S3
+- [Gateway_Node](Gateway_Node)
+  - firmware de la passerelle ESP32
 
-## Pairing and Runtime Flow
+## IoT Node
 
-Visual summary of the gateway/node mode transitions.
-[SVG source](./Flow_Protocole/flux_3_modes.svg)
+Le nœud de mesure est responsable de :
+- lire pH, TDS, turbidité, température, batterie et données inertielles ;
+- détecter les événements de type `SHAKE` ;
+- afficher l'état local sur OLED et RGB ;
+- répondre aux commandes passerelle ;
+- exposer un point d'accès Wi-Fi temporaire pendant l'appairage initial ;
+- recevoir et appliquer des mises à jour FUOTA.
 
-![Three-mode system flow](./Flow_Protocole/flux_3_modes.png)
+Fichiers clés :
+- `IoT_Node.ino`
+- `app_state.*`
+- `pairing_mode.*`
+- `pairing_store.*`
+- `lora_radio.*`
+- `task_sensors.*`
+- `task_control.*`
+- `task_mpu.*`
+- `task_display.*`
+- `display_oled.*`
+- `firmware_version.*`
 
-### First-time setup
+## Gateway Node
 
-1. The gateway starts in BLE provisioning mode if WiFi credentials are not stored.
-2. Once provisioned, it scans for nearby node access points named `IOT-<NODE_ID>`.
-3. During pairing, the gateway connects to the node AP and uses `/identity`, `/prove`, and `/provision`.
-4. The backend verifies the pairing flow and provides the runtime AES key.
-5. The node stores the pairing data, joins the target WiFi network, and reboots into normal mode.
+La passerelle est responsable de :
+- recevoir les credentials Wi-Fi via BLE ;
+- provisionner la passerelle côté cloud ;
+- découvrir et appairer les nœuds voisins ;
+- transmettre les commandes LoRa ;
+- recevoir, valider et router les charges utiles chiffrées ;
+- synchroniser les commandes MQTT ;
+- pousser les données vers le backend ;
+- déclencher les alertes locales ;
+- orchestrer OTA passerelle et FUOTA nœud.
 
-### Normal operation
+Fichiers clés :
+- `Gateway_Node.ino`
+- `normal_mode.*`
+- `provisioning_mode.*`
+- `ble_provisioning.*`
+- `wifi_store.*`
+- `node_pairing_mode.*`
+- `node_pairing_store.*`
+- `mqtt_gateway.*`
+- `api_client.*`
+- `wifi_manager.*`
+- `lora_radio.*`
+- `fuota_manager.*`
+- `fuota_job_store.*`
+- `telemetry.*`
+- `audio_alert.*`
+- `sd_logger.*`
 
-1. The gateway activates the node over LoRa.
-2. The gateway periodically sends heartbeat and measurement requests.
-3. The node responds with encrypted LoRa frames.
-4. The gateway parses the payload, uploads telemetry, and triggers alerts when thresholds are exceeded.
 
-## LoRa Protocol
+## Protocole LoRa actuel
 
-Visual summary of the LoRa command and response protocol.
-[SVG source](./Flow_Protocole/protocole_communication_LoRa.svg)
+Les types de trames actuellement définis entre passerelle et nœud sont :
 
-![LoRa protocol flow](./Flow_Protocole/protocole_communication_LoRa.png)
-
-Both firmwares use the same encrypted frame types:
-
-| Type | Direction | Meaning |
-|------|-----------|---------|
-| `0x01` | Node -> Gateway | `DATA` |
+| Type | Direction | Signification |
+|------|-----------|---------------|
+| `0x01` | Node -> Gateway | `DATA` (`MEASURE_RESP` ou `SHAKE_ALERT`) |
 | `0x02` | Both | `ACK` |
 | `0x03` | Gateway -> Node | `MEASURE_REQ` |
 | `0x04` | Gateway -> Node | `HEARTBEAT_REQ` |
 | `0x05` | Node -> Gateway | `HEARTBEAT_ACK` |
 | `0x06` | Gateway -> Node | `ACTIVATE` |
 | `0x07` | Node -> Gateway | `ACTIVATE_OK` |
+| `0x08` | Gateway -> Node | `SET_CONFIG` |
+| `0x09` | Gateway -> Node | `UNPAIR` |
+| `0x0A` | Gateway -> Node | `SLEEP` |
+| `0x0B` | Gateway -> Node | `FUOTA_BEGIN` |
+| `0x0C` | Gateway -> Node | `FUOTA_CHUNK` |
+| `0x0D` | Gateway -> Node | `FUOTA_END` |
+| `0x0E` | Gateway -> Node | `FUOTA_COMMIT` |
 
-Protocol features:
+Caractéristiques du protocole :
+- chiffrement authentifié `AES-128-GCM`
+- validation `CRC-16`
+- protection anti-rejeu par compteur de séquence
+- évitement de collision basé sur `CAD`
 
-- AES-128-GCM authenticated encryption
-- CRC-16 frame validation
-- sequence-based replay protection
-- LoRa CAD-based collision avoidance
+### Structure détaillée de la trame LoRa
 
-## Payload Format
+Pour garantir la sécurité, la fiabilité et la conformité aux contraintes de la bande ISM (fréquence **433 MHz**), chaque trame du protocole EauSûre suit une structure binaire rigoureuse d'une taille maximale de **222 octets** :
 
-Example measurement payload:
+*   **En-tête (Header) en clair (24 octets) :** Contient les informations indispensables au routage et à la validation : version du protocole, type de message (`MsgType`), identifiant du dispositif (`Device ID`), numéro de séquence anti-rejeu (`seq`), nonce de chiffrement et taille de la charge utile.
+    *   *Sécurité (AAD) :* L'en-tête voyage non chiffré pour permettre un traitement rapide, mais il est intégré au calcul du tag AES-GCM en tant que **Données Authentifiées Supplémentaires (AAD)**. Toute altération en transit invalidera le tag et provoquera le rejet de la trame.
+*   **Payload chiffré (0 à 180 octets) :** Contient les données applicatives (mesures de qualité d'eau, configurations, chunks de FUOTA), chiffrées de bout en bout en **AES-128-GCM**.
+*   **Tag GCM (16 octets) :** Le tag d'authentification cryptographique garantissant l'intégrité absolue et l'authenticité de la trame.
+*   **CRC-16 Logiciel (2 octets) :** Calculé par le firmware de l'émetteur et vérifié par le récepteur, offrant un second niveau d'intégrité de bout en bout en plus du CRC matériel du transceiver radio **SX1278**.
 
-```json
-{"b":85,"v":3.9,"m":150,"p":6.8,"ps":8,"t":280,"ts":7,"u":2.1,"us":6,"tw":22.5,"tm":45.2,"te":38.1,"e":"None"}
-```
+<div align="center">
+  <img
+    src="Schematics/trame_LoRa.svg"
+    alt="Structure détaillée de la trame LoRa EauSûre"
+    style="background-color: #ffffff; padding: 12px; border-radius: 12px; border: 1px solid #e1e8ed; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 100%;"
+  />
+</div>
 
-Example shake payload:
+## Provisioning et appairage
 
-```json
-{"e":"SHAKE","ag":2.45,"dg":1.45}
-```
+Pour passer d'un état initial "sortie d'usine" à un fonctionnement nominal sécurisé, le système EauSûre met en œuvre un cycle de vie rigoureux divisé en trois phases principales (illustrées par le diagramme ci-dessous) :
 
-Field reference:
+### 1. Mise en service de la passerelle (BLE Provisioning)
+Lorsque la passerelle démarre pour la première fois et qu'aucun identifiant Wi-Fi n'est enregistré en mémoire non volatile (NVS) :
+1.  **Mode Provisioning :** La passerelle active son interface Bluetooth Low Energy (BLE) et diffuse son identifiant accompagnée d'un challenge à usage unique (anti-rejeu).
+2.  **Transmission cryptée :** L'application mobile récupère le secret de la passerelle depuis le cloud, dérive une clé de chiffrement et une clé de signature via **HMAC-SHA256**, puis envoie de façon sécurisée les identifiants Wi-Fi et le jeton d'authentification utilisateur.
+3.  **Connexion & Sauvegarde :** La passerelle déchiffre les paramètres, valide le challenge, teste la connexion Wi-Fi et sauvegarde les credentials. Elle libère ensuite entièrement la pile BLE en RAM pour libérer de la mémoire vive pour la suite.
 
-| Field | Meaning |
-|------|---------|
-| `b` | battery percentage |
-| `v` | battery/load voltage |
-| `m` | battery current (mA) |
-| `p` | pH |
-| `ps` | pH score |
-| `t` | TDS |
-| `ts` | TDS score |
-| `u` | turbidity voltage |
-| `us` | turbidity score |
-| `tw` | water temperature |
-| `tm` | MPU temperature |
-| `te` | ESP32 temperature |
-| `e` | event |
-| `ag` | acceleration magnitude |
-| `dg` | dynamic acceleration |
+### 2. Appairage du nœud de mesure (Wi-Fi Local Pairing)
+Une fois la passerelle connectée à Internet, elle doit s'associer avec le nœud de mesure local :
+1.  **Point d'accès temporaire :** Le nœud démarre en mode **SoftAP** et crée un réseau Wi-Fi local nommé `IOT-<NODE_ID>`, protégé par une clé dérivée de son secret matériel unique.
+2.  **Scan & Connexion :** La passerelle scanne l'environnement, se connecte au SoftAP du nœud grâce à la clé d'appairage récupérée via MQTT, puis interroge le nœud (routes `/identity` et `/prove`).
+3.  **Preuve Cryptographique :** Le nœud génère une preuve de légitimité signée par HMAC-SHA256 que la passerelle transmet au backend pour validation.
+4.  **Échange de clés :** Une fois validé par le cloud, un jeton cryptographique temporaire est transmis au nœud (via `/provision`), lui ordonnant de rejoindre le réseau Wi-Fi local en mode **STA** (Station).
+5.  **Clé AES définitive :** Le nœud (via HTTPS) et la passerelle (via MQTT) récupèrent auprès du cloud la **clé AES de session LoRa définitive** qu'ils enregistrent localement en flash.
+
+### 3. Transition vers le Mode Normal
+Pour assurer la stabilité et une faible consommation :
+*   Le nœud détruit sa tâche serveur HTTP locale, coupe le Wi-Fi local et bascule sur le protocole radio **LoRa chiffré**. Il passe la majorité de son temps en veille profonde (Deep Sleep).
+*   La passerelle désactive toutes les tâches d'appairage temporaires et alloue ses ressources aux connexions **MQTT(S)** sécurisées et au traitement audio local.
+
+Le flux complet des transitions d'états et le cycle de vie du système sont représentés dans le schéma ci-dessous :
+
+<div align="center">
+  <img
+    src="Schematics/modes_fonctionnement.svg"
+    alt="Flux de transition des modes de fonctionnement"
+    style="background-color: #ffffff; padding: 12px; border-radius: 12px; border: 1px solid #e1e8ed; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 100%;"
+  />
+</div>
+
+
+## Runtime nominal
+
+En fonctionnement nominal :
+- la passerelle réactive le nœud via `ACTIVATE` ;
+- elle pilote les fenêtres de réveil avec `MEASURE_REQ`, `HEARTBEAT_REQ` et `SLEEP` ;
+- le nœud répond avec des trames `DATA` ou `HEARTBEAT_ACK` ;
+- la passerelle relaie ensuite les mesures vers le cloud et MQTT ;
+- en cas de `SHAKE`, une fenêtre de suivi spécifique est ouverte.
+
+## FUOTA 
+
+Le firmware supporte désormais :
+- le téléchargement de firmware côté passerelle ;
+- la persistance d'un job FUOTA entre redémarrages ;
+- le transfert LoRa fragmenté vers le nœud ;
+- le commit différé du nouveau firmware ;
+- le reporting d'état vers MQTT / backend.
+
+
 
 ## Configuration
 
-Create `config.h` in each folder from the provided template files:
-
+Créer `config.h` à partir des templates :
 - `IoT_Node/config.h.template`
 - `Gateway_Node/config.h.template`
 
-These files are ignored by Git through `**/config.h`.
 
-## Build Notes
 
-- `IoT_Node/` targets an ESP32-S3 board
-- `Gateway_Node/` targets an ESP32-based gateway board
-- Open each `.ino` file in Arduino IDE / PlatformIO with the required libraries installed
+## Compilation
+
+- `IoT_Node/` cible une carte `ESP32-S3`
+- `Gateway_Node/` cible une passerelle `ESP32`
+- ouvrir chaque `.ino` dans Arduino IDE ou PlatformIO avec les bibliothèques requises

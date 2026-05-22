@@ -25,6 +25,10 @@ bool sendHeartbeatReq();
 bool sendSetConfig(float shakeThresholdG, bool shakeEnabled);
 bool sendUnpair();
 bool sendSleepReq(uint32_t sleepDurationSec);
+bool sendFuotaBegin(uint32_t sessionId, uint32_t totalSize, uint16_t chunkSize, uint16_t totalChunks, const String& version, const String& md5);
+bool sendFuotaChunk(uint32_t sessionId, uint32_t chunkIndex, const uint8_t* data, uint16_t len);
+bool sendFuotaEnd(uint32_t sessionId, uint32_t totalSize, uint16_t totalChunks);
+bool sendFuotaCommit(uint32_t sessionId);
 
 // =====================================================
 // Queued Configuration (Class A workaround)

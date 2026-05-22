@@ -27,6 +27,10 @@ static const uint8_t MSG_TYPE_ACTIVATE_OK   = 0x07;
 static const uint8_t MSG_TYPE_SET_CONFIG    = 0x08;  // GW → IoT  push config update
 static const uint8_t MSG_TYPE_UNPAIR        = 0x09;  // GW → IoT  dissociate node
 static const uint8_t MSG_TYPE_SLEEP         = 0x0A;  // GW → IoT  command to deep sleep
+static const uint8_t MSG_TYPE_FUOTA_BEGIN   = 0x0B;  // GW → IoT  start firmware transfer session
+static const uint8_t MSG_TYPE_FUOTA_CHUNK   = 0x0C;  // GW → IoT  firmware chunk
+static const uint8_t MSG_TYPE_FUOTA_END     = 0x0D;  // GW → IoT  end transfer and validate
+static const uint8_t MSG_TYPE_FUOTA_COMMIT  = 0x0E;  // GW → IoT  apply received firmware
 
 // =====================================================
 // Frame layout constants

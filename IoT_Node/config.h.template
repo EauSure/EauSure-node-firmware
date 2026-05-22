@@ -24,6 +24,7 @@
 static const uint32_t DEVICE_ID = NODE_DEVICE_ID;
 // This must match the pre-registered deviceSecret stored in the backend.
 #define NODE_DEVICE_SECRET "replace_with_node_device_secret"
+// Firmware version: edit version.txt then run `python3 tools/embed_version.py` before compile.
 static const uint8_t PROTO_VERSION = 1;
 
 

@@ -50,14 +50,9 @@ static void startNormalRuntime() {
   // Check if we woke up from deep sleep (measure interval timer)
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   if (cause == ESP_SLEEP_WAKEUP_TIMER) {
-      Serial.println("[WAKEUP] Timer wakeup -> Triggering measurement cycle");
-      if (gNodeActive) {
-         if (gSensorTaskHandle != nullptr) {
-            xTaskNotifyGive(gSensorTaskHandle);
-         }
-      } else {
-         Serial.println("[WAKEUP] Node not active, waiting for ACTIVATE");
-      }
+      // Timer wake only brings the radio up — the gateway drives MEASURE_REQ.
+      // Auto-measuring here collides with gateway HEARTBEAT/FUOTA on the same channel.
+      Serial.println("[WAKEUP] Timer wakeup -> listening for gateway commands");
   } else if (cause == ESP_SLEEP_WAKEUP_EXT0) {
       Serial.println("[WAKEUP] EXT0 wakeup (Shake) -> Sending immediate SHAKE_ALERT");
 

@@ -3,6 +3,7 @@
 #include "mqtt_gateway.h"
 #include "otaa_manager.h"
 #include "config.h"
+#include "sd_logger.h"
 #include <string.h>
 
 namespace {
@@ -10,7 +11,11 @@ constexpr uint32_t kCloudSubmitPreferredHeapFloor = 30000;
 constexpr uint32_t kCloudSubmitEmergencyHeapFloor = 24000;
 constexpr uint32_t kAudioPlaybackHeapFloor = 26000;
 constexpr uint32_t kTelemetryRetryIntervalMs = 5000;
+constexpr uint32_t kTelemetryRateLimitBackoffMs = 30000;
+constexpr uint32_t kTelemetryMaxBackoffMs = 15 * 60 * 1000;
 constexpr size_t   kPendingTelemetryCapacity = 6;
+constexpr const char* kTelemetrySpoolPath = "/telemetry_queue.ndjson";
+constexpr const char* kTelemetrySpoolTmpPath = "/telemetry_queue.tmp";
 
 struct TelemetryRecord {
   uint32_t seq;
@@ -29,6 +34,8 @@ struct TelemetryRecord {
   int8_t rssi;
   float snr;
   char errorMsg[24];
+  char firmwareVersion[24];
+  bool fromSdSpool;
 };
 
 TelemetryRecord gPendingTelemetry[kPendingTelemetryCapacity];
@@ -36,6 +43,8 @@ size_t gPendingTelemetryHead = 0;
 size_t gPendingTelemetryTail = 0;
 size_t gPendingTelemetryCount = 0;
 uint32_t gLastTelemetryAttemptAt = 0;
+uint32_t gTelemetryRetryDelayMs = kTelemetryRetryIntervalMs;
+bool gSpoolLoadedIntoRam = false;
 
 bool heapReadyForTask(const char* taskName, uint32_t floorBytes) {
   const uint32_t freeHeap = ESP.getFreeHeap();
@@ -81,8 +90,139 @@ TelemetryRecord buildTelemetryRecord(JsonDocument& doc, uint32_t seq, int rssi, 
   record.esp32Temp = doc["te"] | 0.0f;
   record.rssi = (int8_t)rssi;
   record.snr = snr;
+  record.fromSdSpool = false;
   copyEventString(record.errorMsg, sizeof(record.errorMsg), doc["e"] | "None");
+  copyEventString(record.firmwareVersion, sizeof(record.firmwareVersion), doc["fw"] | "");
   return record;
+}
+
+String telemetryRecordToJsonLine(const TelemetryRecord& record) {
+  String payload = "{";
+  payload += "\"seq\":" + String(record.seq);
+  payload += ",\"b\":" + String(record.battery);
+  payload += ",\"v\":" + String(record.voltage, 2);
+  payload += ",\"m\":" + String(record.current);
+  payload += ",\"p\":" + String(record.pH, 2);
+  payload += ",\"ps\":" + String(record.phStatus);
+  payload += ",\"t\":" + String(record.tds);
+  payload += ",\"ts\":" + String(record.tdsStatus);
+  payload += ",\"u\":" + String(record.turbidity, 1);
+  payload += ",\"us\":" + String(record.turbidityStatus);
+  payload += ",\"tw\":" + String(record.waterTemp, 1);
+  payload += ",\"tm\":" + String(record.moduleTemp, 1);
+  payload += ",\"te\":" + String(record.esp32Temp, 1);
+  payload += ",\"rssi\":" + String(record.rssi);
+  payload += ",\"snr\":" + String(record.snr, 1);
+  payload += ",\"e\":\"" + String(record.errorMsg[0] ? record.errorMsg : "None") + "\"";
+  payload += "}\n";
+  return payload;
+}
+
+bool parseTelemetryRecordLine(const String& line, TelemetryRecord& record) {
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, line);
+  if (err) {
+    Serial.printf("[Telemetry][SD] JSON parse error from spool: %s\n", err.c_str());
+    return false;
+  }
+
+  memset(&record, 0, sizeof(record));
+  record.seq = doc["seq"] | 0;
+  record.battery = doc["b"] | 0;
+  record.voltage = doc["v"] | 0.0f;
+  record.current = doc["m"] | 0;
+  record.pH = doc["p"] | 0.0f;
+  record.phStatus = doc["ps"] | 0;
+  record.tds = doc["t"] | 0;
+  record.tdsStatus = doc["ts"] | 0;
+  record.turbidity = doc["u"] | 0.0f;
+  record.turbidityStatus = doc["us"] | 0;
+  record.waterTemp = doc["tw"] | 0.0f;
+  record.moduleTemp = doc["tm"] | 0.0f;
+  record.esp32Temp = doc["te"] | 0.0f;
+  record.rssi = (int8_t)(doc["rssi"] | 0);
+  record.snr = doc["snr"] | 0.0f;
+  record.fromSdSpool = true;
+  copyEventString(record.errorMsg, sizeof(record.errorMsg), doc["e"] | "None");
+  return true;
+}
+
+bool appendTelemetryRecordToSd(const TelemetryRecord& record) {
+  if (!ensureSdReady()) {
+    Serial.printf("[Telemetry][SD] SD unavailable — cannot spool seq=%lu\n", (unsigned long)record.seq);
+    return false;
+  }
+
+  File out = SD.open(kTelemetrySpoolPath, FILE_APPEND);
+  if (!out) {
+    Serial.printf("[Telemetry][SD] Cannot open spool file for seq=%lu\n", (unsigned long)record.seq);
+    return false;
+  }
+
+  const String line = telemetryRecordToJsonLine(record);
+  const size_t written = out.print(line);
+  out.close();
+
+  if (written != line.length()) {
+    Serial.printf("[Telemetry][SD] Incomplete spool write for seq=%lu\n", (unsigned long)record.seq);
+    return false;
+  }
+
+  Serial.printf("[Telemetry][SD] Spooling seq=%lu to %s\n",
+                (unsigned long)record.seq,
+                kTelemetrySpoolPath);
+  return true;
+}
+
+bool loadNextTelemetryRecordFromSd(TelemetryRecord& record) {
+  if (!ensureSdReady() || !SD.exists(kTelemetrySpoolPath)) {
+    return false;
+  }
+
+  File in = SD.open(kTelemetrySpoolPath, FILE_READ);
+  if (!in) {
+    return false;
+  }
+
+  String firstLine = in.readStringUntil('\n');
+  firstLine.trim();
+  if (firstLine.length() == 0) {
+    in.close();
+    SD.remove(kTelemetrySpoolPath);
+    return false;
+  }
+
+  if (SD.exists(kTelemetrySpoolTmpPath)) {
+    SD.remove(kTelemetrySpoolTmpPath);
+  }
+
+  File out = SD.open(kTelemetrySpoolTmpPath, FILE_WRITE);
+  if (!out) {
+    in.close();
+    return false;
+  }
+
+  while (in.available()) {
+    String line = in.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+    out.print(line);
+    out.print('\n');
+  }
+
+  in.close();
+  out.close();
+  SD.remove(kTelemetrySpoolPath);
+  if (SD.exists(kTelemetrySpoolTmpPath)) {
+    SD.rename(kTelemetrySpoolTmpPath, kTelemetrySpoolPath);
+  }
+
+  if (!parseTelemetryRecordLine(firstLine, record)) {
+    return false;
+  }
+
+  Serial.printf("[Telemetry][SD] Restored seq=%lu from spool\n", (unsigned long)record.seq);
+  return true;
 }
 
 void popPendingTelemetry() {
@@ -241,13 +381,13 @@ static void printDataPayload(JsonDocument& doc, uint32_t seq,
 // =====================================================
 // submitToCloud — WiFi POST
 // =====================================================
-static bool submitToCloud(const TelemetryRecord& record) {
+static WiFiManager::SubmitResult submitToCloud(const TelemetryRecord& record, int* httpStatusOut) {
   Serial.println("[Cloud] Submitting to API...");
 
   String nodeId = getNodeIdString();
   String gatewayHardwareId = getGatewayHardwareIdString();
 
-  bool ok = WiFiManager::submitSensorData(
+  WiFiManager::SubmitResult result = WiFiManager::submitSensorData(
     nodeId.c_str(),
     gatewayHardwareId.c_str(),
     record.seq,
@@ -265,11 +405,13 @@ static bool submitToCloud(const TelemetryRecord& record) {
     record.esp32Temp,
     record.errorMsg,
     record.rssi,
-    record.snr
+    record.snr,
+    httpStatusOut,
+    record.firmwareVersion[0] ? record.firmwareVersion : nullptr
   );
 
-  Serial.println(ok ? "[Cloud] ✓ Sent successfully" : "[Cloud] ✗ Send failed");
-  return ok;
+  Serial.println(result == WiFiManager::SubmitResult::Success ? "[Cloud] ✓ Sent successfully" : "[Cloud] ✗ Send failed");
+  return result;
 }
 
 bool telemetryHasPendingUpload() {
@@ -277,6 +419,14 @@ bool telemetryHasPendingUpload() {
 }
 
 void telemetryTick() {
+  if (gPendingTelemetryCount == 0 && !gSpoolLoadedIntoRam) {
+    TelemetryRecord restored;
+    if (loadNextTelemetryRecordFromSd(restored)) {
+      enqueueTelemetryRecord(restored);
+      gSpoolLoadedIntoRam = true;
+    }
+  }
+
   if (gPendingTelemetryCount == 0) {
     return;
   }
@@ -286,7 +436,7 @@ void telemetryTick() {
   }
 
   const uint32_t now = millis();
-  if (gLastTelemetryAttemptAt != 0 && (now - gLastTelemetryAttemptAt) < kTelemetryRetryIntervalMs) {
+  if (gLastTelemetryAttemptAt != 0 && (now - gLastTelemetryAttemptAt) < gTelemetryRetryDelayMs) {
     return;
   }
 
@@ -300,14 +450,42 @@ void telemetryTick() {
     return;
   }
 
-  if (submitToCloud(record)) {
+  int httpStatus = 0;
+  WiFiManager::SubmitResult submitResult = submitToCloud(record, &httpStatus);
+
+  if (submitResult == WiFiManager::SubmitResult::Success) {
     popPendingTelemetry();
+    gSpoolLoadedIntoRam = false;
+    gTelemetryRetryDelayMs = kTelemetryRetryIntervalMs;
     Serial.printf("[Telemetry] Upload complete for seq=%lu (remaining=%u)\n",
                   (unsigned long)record.seq,
                   (unsigned)gPendingTelemetryCount);
   } else {
-    Serial.printf("[Telemetry] Upload failed for seq=%lu — leaving it queued for retry\n",
-                  (unsigned long)record.seq);
+    if (!record.fromSdSpool) {
+      if (appendTelemetryRecordToSd(record)) {
+        popPendingTelemetry();
+      } else {
+        Serial.printf("[Telemetry][SD] Failed to spool seq=%lu — keeping it in RAM queue\n",
+                      (unsigned long)record.seq);
+      }
+    }
+
+    if (submitResult == WiFiManager::SubmitResult::RateLimited) {
+      gTelemetryRetryDelayMs = (gTelemetryRetryDelayMs < kTelemetryRateLimitBackoffMs)
+        ? kTelemetryRateLimitBackoffMs
+        : (gTelemetryRetryDelayMs * 2 > kTelemetryMaxBackoffMs ? kTelemetryMaxBackoffMs : gTelemetryRetryDelayMs * 2);
+      Serial.printf("[Telemetry] Upload rate-limited for seq=%lu (HTTP %d) — backoff now %lu ms\n",
+                    (unsigned long)record.seq,
+                    httpStatus,
+                    (unsigned long)gTelemetryRetryDelayMs);
+    } else {
+      gTelemetryRetryDelayMs = (gTelemetryRetryDelayMs * 2 > kTelemetryMaxBackoffMs)
+        ? kTelemetryMaxBackoffMs
+        : gTelemetryRetryDelayMs * 2;
+      Serial.printf("[Telemetry] Upload failed for seq=%lu — retry backoff now %lu ms\n",
+                    (unsigned long)record.seq,
+                    (unsigned long)gTelemetryRetryDelayMs);
+    }
   }
 }
 // =====================================================
@@ -366,7 +544,7 @@ void handleDataPayload(const char *json, int rssi, float snr) {
   }
 
   // ── MEASURE_RESP path ──
-  notifyMeasureResponseHandled();
+  // Scheduler release + SLEEP are handled in parseAndDispatchDataFrame before this runs.
   collectAlertFiles(doc, rssi);
   enqueueTelemetryRecord(buildTelemetryRecord(doc, seq, rssi, snr));
   telemetryTick();

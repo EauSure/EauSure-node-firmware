@@ -7,6 +7,12 @@
 #include "config.h"
 
 namespace WiFiManager {
+    enum class SubmitResult : uint8_t {
+        Success = 0,
+        RetryableError,
+        RateLimited,
+    };
+
     // Initialize WiFi connection with runtime credentials
     bool init(const char* ssid, const char* password);
 
@@ -19,8 +25,16 @@ namespace WiFiManager {
     // Call API to unprovision gateway
     bool unprovisionGateway();
 
+    // Download a firmware or asset file to the SD card over HTTPS.
+    bool downloadFileToSd(
+        const String& url,
+        const char* sdPath,
+        size_t expectedSize,
+        String* errorOut = nullptr
+    );
+
     // Submit sensor data to API
-    bool submitSensorData(
+    SubmitResult submitSensorData(
         const char* nodeId,
         const char* gatewayHardwareId,
         uint32_t seq,
@@ -38,7 +52,9 @@ namespace WiFiManager {
         float esp32Temp,
         const char* errorMsg,
         int8_t rssi,
-        float snr
+        float snr,
+        int* httpStatusOut = nullptr,
+        const char* firmwareVersion = nullptr
     );
 
     // Get WiFi status string

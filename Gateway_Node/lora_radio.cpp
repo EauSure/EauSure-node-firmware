@@ -1,6 +1,9 @@
 #include "lora_radio.h"
 #include "telemetry.h"
 #include "otaa_manager.h"
+#include "fuota_manager.h"
+#include <ArduinoJson.h>
+#include <cstring>
 
 // =====================================================
 // CAD — Channel Activity Detection (wireless only)
@@ -12,6 +15,8 @@
 // =====================================================
 static const uint32_t CAD_TIMEOUT_MS  = 15;
 static const uint8_t  CAD_MAX_RETRIES = 8;
+// Let the node finish TX→RX and process our DATA ACK before SET_CONFIG / FUOTA / SLEEP.
+static const uint32_t NODE_POST_DATA_ACK_SETTLE_MS = 600;
 
 static volatile bool cadDone     = false;
 static volatile bool cadDetected = false;
@@ -242,7 +247,8 @@ static bool waitForAck(uint8_t expectedCmdType, uint32_t seq, uint32_t timeoutMs
 // =====================================================
 // secureCommand — internal: build + CAD-send + wait ACK
 // =====================================================
-static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainLen) {
+static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainLen,
+                          uint32_t ackTimeoutMs = 8000) {
   if (gCommandInFlight) {
     Serial.println("[GW CMD] another command is already in flight");
     return false;
@@ -270,7 +276,7 @@ static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainL
     Serial.printf("[GW CMD TX] type=0x%02X seq=%lu attempt=%d\n",
                   msgType, (unsigned long)seq, attempt + 1);
 
-    if (waitForAck(msgType, seq)) {
+    if (waitForAck(msgType, seq, ackTimeoutMs)) {
       gTxSeq++;
       Serial.printf("[GW CMD ACK] type=0x%02X seq=%lu confirmed\n",
                     msgType, (unsigned long)seq);
@@ -283,6 +289,9 @@ static bool secureCommand(uint8_t msgType, const uint8_t *plain, uint16_t plainL
     Serial.printf("[GW CMD] delivery failed after %d attempts (type=0x%02X)\n",
                   ACK_RETRY_MAX, msgType);
     LoRa.receive();
+    // Always advance seq so the next command (e.g. SLEEP after FUOTA_BEGIN) cannot
+    // reuse a seq the node already accepted (replay reject / silent drop).
+    gTxSeq++;
   }
 
   gCommandInFlight = false;
@@ -403,6 +412,58 @@ bool sendSleepReq(uint32_t sleepDurationSec) {
   return secureCommand(MSG_TYPE_SLEEP, payload, 4);
 }
 
+bool sendFuotaBegin(uint32_t sessionId, uint32_t totalSize, uint16_t chunkSize, uint16_t totalChunks, const String& version, const String& md5) {
+  StaticJsonDocument<384> doc;
+  doc["sid"] = sessionId;
+  doc["sz"] = totalSize;
+  doc["cs"] = chunkSize;
+  doc["tc"] = totalChunks;
+  doc["v"] = version;
+  doc["m"] = md5;
+
+  String json;
+  serializeJson(doc, json);
+  Serial.printf("[GW] Sending FUOTA_BEGIN: %s\n", json.c_str());
+  return secureCommand(MSG_TYPE_FUOTA_BEGIN, (const uint8_t*)json.c_str(), (uint16_t)json.length(), 12000);
+}
+
+bool sendFuotaChunk(uint32_t sessionId, uint32_t chunkIndex, const uint8_t* data, uint16_t len) {
+  if (!data || len == 0 || len > (MAX_PLAIN_LEN - 10)) {
+    return false;
+  }
+
+  uint8_t payload[MAX_PLAIN_LEN] = {0};
+  writeU32BE(&payload[0], sessionId);
+  writeU32BE(&payload[4], chunkIndex);
+  writeU16BE(&payload[8], len);
+  memcpy(&payload[10], data, len);
+
+  Serial.printf("[GW] Sending FUOTA_CHUNK sid=%lu idx=%lu len=%u\n",
+                (unsigned long)sessionId,
+                (unsigned long)chunkIndex,
+                (unsigned)len);
+  return secureCommand(MSG_TYPE_FUOTA_CHUNK, payload, (uint16_t)(10 + len));
+}
+
+bool sendFuotaEnd(uint32_t sessionId, uint32_t totalSize, uint16_t totalChunks) {
+  uint8_t payload[10];
+  writeU32BE(&payload[0], sessionId);
+  writeU32BE(&payload[4], totalSize);
+  writeU16BE(&payload[8], totalChunks);
+  Serial.printf("[GW] Sending FUOTA_END sid=%lu totalSize=%lu totalChunks=%u\n",
+                (unsigned long)sessionId,
+                (unsigned long)totalSize,
+                (unsigned)totalChunks);
+  return secureCommand(MSG_TYPE_FUOTA_END, payload, sizeof(payload));
+}
+
+bool sendFuotaCommit(uint32_t sessionId) {
+  uint8_t payload[4];
+  writeU32BE(&payload[0], sessionId);
+  Serial.printf("[GW] Sending FUOTA_COMMIT sid=%lu\n", (unsigned long)sessionId);
+  return secureCommand(MSG_TYPE_FUOTA_COMMIT, payload, sizeof(payload));
+}
+
 // =====================================================
 // parseGenericFrame — shared header parser
 // =====================================================
@@ -483,21 +544,56 @@ bool parseAndDispatchDataFrame(const uint8_t *frame, size_t frameLen,
 
   // ACK FIRST — before JSON parse, WiFi, or audio
   sendAck(seq);
+  delay(NODE_POST_DATA_ACK_SETTLE_MS);
+  Serial.printf("[GW] Post-DATA-ACK settle %lu ms before downstream commands\n",
+                (unsigned long)NODE_POST_DATA_ACK_SETTLE_MS);
 
-  // Send queued config while node is still listening
+  StaticJsonDocument<128> peek;
+  const char *event = "MEASURE";
+  if (deserializeJson(peek, plain) == DeserializationError::Ok) {
+    event = peek["e"] | "MEASURE";
+  }
+
+  // SHAKE opens a follow-up MEASURE_REQ — do not SLEEP before that second window.
+  if (strcmp(event, "SHAKE") == 0) {
+    handleDataPayload((const char *)plain, rssi, snr);
+    return true;
+  }
+
+  // ── MEASURE_RESP wake window: config → FUOTA → SLEEP → telemetry ──
   if (gHasPendingConfig) {
-    // Slight delay to ensure the Node processed the ACK
     delay(150);
     sendPendingConfig();
   }
 
-  // ── IMPORTANT: SEND SLEEP REQUEST ──
-  // Send the node to deep sleep until the next measurement cycle
+  const bool fuotaConsumedWindow = FuotaManager::handleNodeDataWindow();
+
   delay(150);
-  #include "otaa_manager.h"
-  uint32_t sleepDurationSec = getMeasureIntervalMs() / 1000;
-  if (sleepDurationSec < 30) sleepDurationSec = 30;
-  sendSleepReq(sleepDurationSec);
+  uint32_t sleepDurationSec = computeSleepDurationSec();
+  if (FuotaManager::hasPendingNodeUpdate()) {
+    if (!fuotaConsumedWindow) {
+      // FUOTA did not finish — keep the node listening for the next gateway command.
+      Serial.println("[FUOTA] Transfer incomplete — skipping SLEEP this wake window");
+      notifyMeasureResponseHandled();
+      onMeasureWakeWindowClosed();
+      handleDataPayload((const char *)plain, rssi, snr);
+      return true;
+    }
+    if (sleepDurationSec > 90) {
+      sleepDurationSec = 90;
+    }
+    Serial.println("[FUOTA] Pending node update — capping SLEEP for earlier retry window");
+  } else if (fuotaConsumedWindow && sleepDurationSec > 60) {
+    sleepDurationSec = 60;
+    Serial.println("[FUOTA] Partial transfer — short SLEEP before next wake window");
+  }
+
+  if (sendSleepReq(sleepDurationSec)) {
+    notifyMeasureResponseHandled();
+    onMeasureWakeWindowClosed();
+  } else {
+    Serial.println("[GW] SLEEP command failed — keeping wake window open for scheduler retry");
+  }
 
   handleDataPayload((const char *)plain, rssi, snr);
   return true;
@@ -514,6 +610,11 @@ bool parseAndDispatchTypedFrame(const uint8_t *frame, size_t frameLen,
   uint16_t plainLen = 0;
 
   if (!parseGenericFrame(frame, frameLen, msgType, seq, plain, plainLen)) return false;
+
+  if (msgType == MSG_TYPE_ACK) {
+    // Command ACKs are consumed by waitForAck() during secureCommand().
+    return true;
+  }
 
   sendAck(seq);
 
